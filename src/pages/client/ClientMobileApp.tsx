@@ -59,6 +59,8 @@ export const ClientMobileApp: React.FC<ClientMobileAppProps> = ({
     if (initialTableNumber) return 'SUR_PLACE';
     return initialChannel || 'LIVRAISON';
   });
+  // Si le client n'a pas scanné un QR Table ni cliqué en haut, on lui demande explicitement son mode au checkout
+  const [channelConfirmed, setChannelConfirmed] = useState<boolean>(() => Boolean(initialTableNumber));
   const [tableNumber, setTableNumber] = useState<string>(
     () => initialTableNumber || state.tables[0]?.number || 'T-01'
   );
@@ -307,10 +309,13 @@ export const ClientMobileApp: React.FC<ClientMobileAppProps> = ({
             <div className="flex items-center gap-1.5 overflow-x-auto pb-0.5">
               <button
                 type="button"
-                onClick={() => setChannel('SUR_PLACE')}
+                onClick={() => {
+                  setChannel('SUR_PLACE');
+                  setChannelConfirmed(true);
+                }}
                 style={{
-                  backgroundColor: channel === 'SUR_PLACE' ? 'var(--ink-primary)' : 'var(--bg-subtle)',
-                  color: channel === 'SUR_PLACE' ? 'var(--ink-inverse)' : 'var(--ink-secondary)',
+                  backgroundColor: channelConfirmed && channel === 'SUR_PLACE' ? 'var(--ink-primary)' : 'var(--bg-subtle)',
+                  color: channelConfirmed && channel === 'SUR_PLACE' ? 'var(--ink-inverse)' : 'var(--ink-secondary)',
                 }}
                 className="h-8 px-3 rounded-full text-[12px] font-medium inline-flex items-center gap-1.5 shrink-0 cursor-pointer transition-colors"
               >
@@ -320,10 +325,13 @@ export const ClientMobileApp: React.FC<ClientMobileAppProps> = ({
 
               <button
                 type="button"
-                onClick={() => setChannel('LIVRAISON')}
+                onClick={() => {
+                  setChannel('LIVRAISON');
+                  setChannelConfirmed(true);
+                }}
                 style={{
-                  backgroundColor: channel === 'LIVRAISON' ? 'var(--ink-primary)' : 'var(--bg-subtle)',
-                  color: channel === 'LIVRAISON' ? 'var(--ink-inverse)' : 'var(--ink-secondary)',
+                  backgroundColor: channelConfirmed && channel === 'LIVRAISON' ? 'var(--ink-primary)' : 'var(--bg-subtle)',
+                  color: channelConfirmed && channel === 'LIVRAISON' ? 'var(--ink-inverse)' : 'var(--ink-secondary)',
                 }}
                 className="h-8 px-3 rounded-full text-[12px] font-medium inline-flex items-center gap-1.5 shrink-0 cursor-pointer transition-colors"
               >
@@ -333,10 +341,13 @@ export const ClientMobileApp: React.FC<ClientMobileAppProps> = ({
 
               <button
                 type="button"
-                onClick={() => setChannel('EMPORTER')}
+                onClick={() => {
+                  setChannel('EMPORTER');
+                  setChannelConfirmed(true);
+                }}
                 style={{
-                  backgroundColor: channel === 'EMPORTER' ? 'var(--ink-primary)' : 'var(--bg-subtle)',
-                  color: channel === 'EMPORTER' ? 'var(--ink-inverse)' : 'var(--ink-secondary)',
+                  backgroundColor: channelConfirmed && channel === 'EMPORTER' ? 'var(--ink-primary)' : 'var(--bg-subtle)',
+                  color: channelConfirmed && channel === 'EMPORTER' ? 'var(--ink-inverse)' : 'var(--ink-secondary)',
                 }}
                 className="h-8 px-3 rounded-full text-[12px] font-medium inline-flex items-center gap-1.5 shrink-0 cursor-pointer transition-colors"
               >
@@ -871,8 +882,10 @@ export const ClientMobileApp: React.FC<ClientMobileAppProps> = ({
         onQuickAddDrink={(drink) => addProductToCart(drink, 1, 'Bien glacé')}
         onClearCart={() => setCart([])}
         channel={channel}
+        channelConfirmed={channelConfirmed}
         onChangeChannel={(ch) => {
           setChannel(ch);
+          setChannelConfirmed(true);
           if (ch !== 'SUR_PLACE') setIsQrLockedTable(false);
         }}
         tableNumber={tableNumber}

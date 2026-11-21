@@ -148,6 +148,7 @@ export interface CreateClientOrderInput {
 export interface CompleteDeliveryProofInput {
   orderId: string;
   photoDataUrl: string;
+  photoQualityScore?: number;
   geo?: GeoSnapshot;
   pinEntered?: string;
   bypassPinReason?: string;
@@ -193,6 +194,7 @@ interface ErpContextValue {
   updateDeliveryStatus: (orderId: string, status: DeliveryStatus) => void;
   completeDeliveryWithProof: (input: CompleteDeliveryProofInput) => { ok: boolean; error?: string };
   confirmClientDeliveryReceipt: (input: ConfirmClientReceiptInput) => void;
+  flagDeliveryProof: (orderId: string, reason: string) => void;
 
   // Products & Categories
   addCategory: (name: string, description?: string) => void;
@@ -1342,6 +1344,7 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 capturedBy: input.driverName,
                 verifiedByPin,
                 verificationMode,
+                photoQualityScore: input.photoQualityScore,
                 geo: input.geo,
                 recipientName: input.recipientName?.trim() || undefined,
                 recipientSignature: input.recipientSignature || undefined,
@@ -1453,6 +1456,41 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       });
     },
     [appendAudit]
+  );
+
+  const flagDeliveryProof = useCallback(
+    (orderId: string, reason: string) => {
+      const cleanReason = reason.trim() || 'Photo non conforme au colis du restaurant';
+      const nowIso = new Date().toISOString();
+      setState((prev) => {
+        const cur = prev.orders.find((o) => o.id === orderId);
+        if (!cur || !cur.deliveryProof) return prev;
+        return {
+          ...prev,
+          orders: prev.orders.map((o) =>
+            o.id === orderId && o.deliveryProof
+              ? {
+                ...o,
+                deliveryProof: {
+                  ...o.deliveryProof,
+                  flaggedReason: cleanReason,
+                  flaggedAt: nowIso,
+                  flaggedBy: currentUser.fullName,
+                },
+                updatedAt: nowIso,
+              }
+              : o
+          ),
+          auditLogs: appendAudit(
+            prev,
+            'Sécurité Livraison',
+            `Preuve photo contestée (${cur.orderNumber})`,
+            `Livreur : ${cur.driverName || cur.deliveryProof.capturedBy} · Motif : ${cleanReason}`
+          ),
+        };
+      });
+    },
+    [appendAudit, currentUser.fullName]
   );
 
   const addCategory = useCallback(
@@ -2055,6 +2093,7 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updateDeliveryStatus,
       completeDeliveryWithProof,
       confirmClientDeliveryReceipt,
+      flagDeliveryProof,
       addCategory,
       saveProduct,
       deleteProduct,
@@ -2103,6 +2142,7 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       updateDeliveryStatus,
       completeDeliveryWithProof,
       confirmClientDeliveryReceipt,
+      flagDeliveryProof,
       addCategory,
       saveProduct,
       deleteProduct,

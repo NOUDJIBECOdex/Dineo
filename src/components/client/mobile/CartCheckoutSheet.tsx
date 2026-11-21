@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   ArrowLeft,
   ArrowRight,
   Award,
@@ -13,14 +14,33 @@ import {
   Utensils,
   X,
 } from 'lucide-react';
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import { useErp } from '../../../store/erp.context';
 import type { ErpOrder, ErpOrderItem, OrderChannel, PaymentMethod, Product } from '../../../types/erp';
 import { MAROUA_NEIGHBORHOODS } from '../../../types/erp';
 import { formatFCFA } from '../../../utils/currency';
 import { countLocalPhoneDigits, sanitizePhoneInput } from '../../../utils/phone';
+import { soundNotifier } from '../../../utils/sound';
 import { CashFcfaLogo, MtnMomoLogo, OrangeMoneyLogo } from '../../common/PaymentBrandLogos';
 import { SpellcheckTextarea } from '../../common/SpellcheckTextarea';
+
+type CheckoutFieldKey = 'channel' | 'tableNumber' | 'deliveryAddress' | 'customerName' | 'customerPhone';
+
+const FieldErrorAlert: React.FC<{ message?: string }> = ({ message }) =>
+  message ? (
+    <div
+      role="alert"
+      className="px-2.5 py-1.5 rounded-lg border text-[11.5px] font-medium flex items-center gap-1.5 animate-dineo-shake"
+      style={{
+        backgroundColor: 'var(--err-bg)',
+        borderColor: 'var(--err-border)',
+        color: 'var(--err-text)',
+      }}
+    >
+      <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+      <span>{message}</span>
+    </div>
+  ) : null;
 
 export interface MobileCartLine {
   lineId: string;
@@ -38,6 +58,7 @@ interface CartCheckoutSheetProps {
   onQuickAddDrink: (product: Product) => void;
   onClearCart: () => void;
   channel: OrderChannel;
+  channelConfirmed: boolean;
   onChangeChannel: (ch: OrderChannel) => void;
   tableNumber: string;
   onChangeTableNumber: (tbl: string) => void;
@@ -61,6 +82,7 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
   onQuickAddDrink,
   onClearCart,
   channel,
+  channelConfirmed,
   onChangeChannel,
   tableNumber,
   onChangeTableNumber,
@@ -79,14 +101,24 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
   const [step, setStep] = useState<'CART' | 'CHECKOUT'>('CART');
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('ESPECES');
   const [orderNotes, setOrderNotes] = useState('');
-  const [error, setError] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<Partial<Record<CheckoutFieldKey, string>>>({});
   const [copiedCode, setCopiedCode] = useState(false);
+  const checkoutScrollRef = useRef<HTMLDivElement | null>(null);
+
+  const clearFieldError = (key: CheckoutFieldKey) => {
+    setFieldErrors((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  };
 
   const deliveryFee = useMemo(() => {
-    if (channel !== 'LIVRAISON') return 0;
+    if (!channelConfirmed || channel !== 'LIVRAISON') return 0;
     const found = MAROUA_NEIGHBORHOODS.find((n) => n.name === neighborhood);
     return found ? found.fee : state.settings.defaultDeliveryFee;
-  }, [channel, neighborhood, state.settings.defaultDeliveryFee]);
+  }, [channelConfirmed, channel, neighborhood, state.settings.defaultDeliveryFee]);
 
   const subtotal = useMemo(
     () => cart.reduce((sum, l) => sum + l.product.price * l.quantity, 0),
@@ -120,7 +152,7 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
 
   const handleClose = () => {
     setStep('CART');
-    setError('');
+    setFieldErrors({});
     onClose();
   };
 
@@ -132,21 +164,41 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    setError('');
-
     if (cart.length === 0) return;
-    if (!customerName.trim()) {
-      setError('Indiquez votre prénom ou nom pour le service.');
+
+    const nextErrors: Partial<Record<CheckoutFieldKey, string>> = {};
+
+    if (!channelConfirmed) {
+      nextErrors.channel =
+        'Veuillez choisir comment recevoir votre commande : Sur place (À table), À emporter ou Livraison.';
+    }
+
+    if (channelConfirmed && channel === 'SUR_PLACE' && !tableNumber.trim()) {
+      nextErrors.tableNumber = 'Veuillez sélectionner votre numéro de table.';
+    }
+
+    if (channelConfirmed && channel === 'LIVRAISON' && deliveryAddress.trim().length < 5) {
+      nextErrors.deliveryAddress =
+        'Indiquez un repère précis dans votre quartier (ex. face pharmacie, portail vert).';
+    }
+
+    if (customerName.trim().length < 2) {
+      nextErrors.customerName = 'Veuillez renseigner votre nom ou prénom (obligatoire).';
+    }
+
+    if (countLocalPhoneDigits(customerPhone) < 9) {
+      nextErrors.customerPhone =
+        'Veuillez saisir un numéro camerounais valide à 9 chiffres (ex. +237 6 99 12 34 56).';
+    }
+
+    if (Object.keys(nextErrors).length > 0) {
+      setFieldErrors(nextErrors);
+      soundNotifier.playErrorFeedback();
+      checkoutScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
       return;
     }
-    if (channel === 'LIVRAISON' && countLocalPhoneDigits(customerPhone) < 9) {
-      setError('Veuillez saisir un numéro camerounais valide à 9 chiffres (ex: +237 6 99 12 34 56).');
-      return;
-    }
-    if (channel === 'LIVRAISON' && !deliveryAddress.trim()) {
-      setError('Précisez un repère ou une adresse dans votre quartier à Maroua.');
-      return;
-    }
+
+    setFieldErrors({});
 
     const items: ErpOrderItem[] = cart.map((l) => {
       const noteParts = [l.optionLabel, l.note].filter(Boolean);
@@ -209,7 +261,7 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
                 type="button"
                 onClick={() => {
                   setStep('CART');
-                  setError('');
+                  setFieldErrors({});
                 }}
                 className="w-8 h-8 rounded-full flex items-center justify-center cursor-pointer"
                 style={{ backgroundColor: 'var(--bg-subtle)' }}
@@ -378,67 +430,86 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
             )}
           </>
         ) : (
-          /* STEP 2 : VALIDATION & PAIEMENT */
-          <form onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
-            <div className="flex-1 overflow-y-auto p-5 space-y-4">
-              {error && (
-                <div
-                  className="px-3.5 py-2.5 rounded-xl border text-[12.5px] font-medium"
-                  style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
-                >
-                  {error}
+          /* STEP 2 : VALIDATION & PAIEMENT (noValidate = nos propres alertes rouges au-dessus de chaque case) */
+          <form noValidate onSubmit={handleSubmit} className="flex flex-col flex-1 min-h-0">
+            <div ref={checkoutScrollRef} className="flex-1 overflow-y-auto p-5 space-y-4">
+              {/* Service Mode — Choix explicite obligatoire */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-[12.5px] font-semibold block" style={{ color: 'var(--ink-primary)' }}>
+                    Comment souhaitez-vous recevoir votre commande ? <span style={{ color: 'var(--err-dot)' }}>*</span>
+                  </label>
+                  {!channelConfirmed && (
+                    <span
+                      className="text-[10.5px] font-semibold px-2 py-0.5 rounded-full"
+                      style={{ backgroundColor: 'var(--accent-soft)', color: 'var(--accent)' }}
+                    >
+                      À choisir
+                    </span>
+                  )}
                 </div>
-              )}
 
-              {/* Service Mode */}
-              <div className="space-y-1.5">
-                <label className="text-[12px] font-semibold block" style={{ color: 'var(--ink-secondary)' }}>
-                  Mode de commande
-                </label>
-                <div
-                  className="grid grid-cols-3 p-1 rounded-xl border gap-1"
-                  style={{ backgroundColor: 'var(--bg-subtle)', borderColor: 'var(--border-hairline)' }}
-                >
+                <FieldErrorAlert message={fieldErrors.channel} />
+
+                <div className="grid grid-cols-3 gap-2">
                   {(
                     [
-                      { id: 'SUR_PLACE', label: 'À table', icon: Utensils },
-                      { id: 'LIVRAISON', label: 'Livraison', icon: Truck },
-                      { id: 'EMPORTER', label: 'Emporter', icon: ShoppingBag },
+                      { id: 'SUR_PLACE', label: 'Sur place', sub: 'À table', icon: Utensils },
+                      { id: 'EMPORTER', label: 'À emporter', sub: 'Retrait 0 F', icon: ShoppingBag },
+                      { id: 'LIVRAISON', label: 'Livraison', sub: 'Moto Maroua', icon: Truck },
                     ] as const
                   ).map((opt) => {
                     const Icon = opt.icon;
-                    const active = channel === opt.id;
+                    const active = channelConfirmed && channel === opt.id;
                     return (
                       <button
                         key={opt.id}
                         type="button"
-                        onClick={() => onChangeChannel(opt.id)}
-                        style={{
-                          backgroundColor: active ? 'var(--bg-surface)' : 'transparent',
-                          color: active ? 'var(--ink-primary)' : 'var(--ink-muted)',
+                        onClick={() => {
+                          onChangeChannel(opt.id);
+                          clearFieldError('channel');
+                          clearFieldError('deliveryAddress');
+                          clearFieldError('tableNumber');
                         }}
-                        className="h-10 rounded-lg text-[12.5px] font-medium flex items-center justify-center gap-1.5 cursor-pointer transition-all"
+                        style={{
+                          backgroundColor: active ? 'var(--accent-soft)' : 'var(--bg-subtle)',
+                          borderColor: active
+                            ? 'var(--accent)'
+                            : fieldErrors.channel
+                              ? 'var(--err-dot)'
+                              : 'var(--border-hairline)',
+                          color: active ? 'var(--ink-primary)' : 'var(--ink-secondary)',
+                        }}
+                        className="p-2.5 rounded-xl border flex flex-col items-center text-center gap-1 cursor-pointer transition-all active:scale-[0.98]"
                       >
-                        <Icon className="w-3.5 h-3.5" style={{ color: active ? 'var(--accent)' : undefined }} />
-                        {opt.label}
+                        <Icon className="w-4 h-4" style={{ color: active ? 'var(--accent)' : 'var(--ink-muted)' }} />
+                        <span className="text-[12px] font-semibold leading-tight">{opt.label}</span>
+                        <span className="text-[10px]" style={{ color: 'var(--ink-muted)' }}>
+                          {opt.sub}
+                        </span>
                       </button>
                     );
                   })}
                 </div>
               </div>
 
-              {/* Table or Delivery Neighborhood */}
-              {channel === 'SUR_PLACE' && (
+              {/* Table or Delivery Neighborhood (affiché une fois le mode choisi) */}
+              {channelConfirmed && channel === 'SUR_PLACE' && (
                 <div className="space-y-1.5">
                   <label className="text-[12px] font-medium block" style={{ color: 'var(--ink-secondary)' }}>
-                    Votre table {isQrLockedTable ? '(détectée via QR Code)' : ''}
+                    Votre table {isQrLockedTable ? '(détectée via QR Code)' : ''}{' '}
+                    <span style={{ color: 'var(--err-dot)' }}>*</span>
                   </label>
+                  <FieldErrorAlert message={fieldErrors.tableNumber} />
                   <select
                     value={tableNumber}
-                    onChange={(e) => onChangeTableNumber(e.target.value)}
+                    onChange={(e) => {
+                      onChangeTableNumber(e.target.value);
+                      clearFieldError('tableNumber');
+                    }}
                     style={{
                       backgroundColor: 'var(--bg-subtle)',
-                      borderColor: 'var(--border-hairline)',
+                      borderColor: fieldErrors.tableNumber ? 'var(--err-dot)' : 'var(--border-hairline)',
                       color: 'var(--ink-primary)',
                     }}
                     className="w-full h-11 px-3.5 rounded-xl border text-[13.5px] focus:outline-none focus:border-[var(--ink-primary)]"
@@ -452,12 +523,12 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
                 </div>
               )}
 
-              {channel === 'LIVRAISON' && (
+              {channelConfirmed && channel === 'LIVRAISON' && (
                 <div className="space-y-3">
                   <div className="space-y-1.5">
                     <label className="text-[12px] font-medium flex items-center gap-1" style={{ color: 'var(--ink-secondary)' }}>
                       <MapPin className="w-3.5 h-3.5" style={{ color: 'var(--accent)' }} />
-                      Quartier à Maroua
+                      Quartier à Maroua <span style={{ color: 'var(--err-dot)' }}>*</span>
                     </label>
                     <select
                       value={neighborhood}
@@ -479,17 +550,20 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
 
                   <div className="space-y-1.5">
                     <label className="text-[12px] font-medium block" style={{ color: 'var(--ink-secondary)' }}>
-                      Repère / Adresse précise *
+                      Repère / Adresse précise <span style={{ color: 'var(--err-dot)' }}>*</span>
                     </label>
+                    <FieldErrorAlert message={fieldErrors.deliveryAddress} />
                     <input
                       type="text"
-                      required
                       value={deliveryAddress}
-                      onChange={(e) => onChangeDeliveryAddress(e.target.value)}
+                      onChange={(e) => {
+                        onChangeDeliveryAddress(e.target.value);
+                        clearFieldError('deliveryAddress');
+                      }}
                       placeholder="Ex: Près du Carrefour Domayo, immeuble bleu"
                       style={{
                         backgroundColor: 'var(--bg-subtle)',
-                        borderColor: 'var(--border-hairline)',
+                        borderColor: fieldErrors.deliveryAddress ? 'var(--err-dot)' : 'var(--border-hairline)',
                         color: 'var(--ink-primary)',
                       }}
                       className="w-full h-11 px-3.5 rounded-xl border text-[13.5px] focus:outline-none focus:border-[var(--ink-primary)]"
@@ -498,7 +572,7 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
                 </div>
               )}
 
-              {channel === 'EMPORTER' && (
+              {channelConfirmed && channel === 'EMPORTER' && (
                 <div
                   className="p-3.5 rounded-xl border text-[12.5px]"
                   style={{ borderColor: 'var(--border-hairline)', backgroundColor: 'var(--bg-subtle)' }}
@@ -510,21 +584,24 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
                 </div>
               )}
 
-              {/* Contact info */}
+              {/* Contact info — NOM & TÉLÉPHONE STRICTEMENT OBLIGATOIRES SUR TOUS LES MODES */}
               <div className="grid grid-cols-1 gap-3">
                 <div className="space-y-1.5">
                   <label className="text-[12px] font-medium block" style={{ color: 'var(--ink-secondary)' }}>
-                    Votre nom ou prénom *
+                    Votre nom ou prénom <span style={{ color: 'var(--err-dot)' }}>*</span>
                   </label>
+                  <FieldErrorAlert message={fieldErrors.customerName} />
                   <input
                     type="text"
-                    required
                     value={customerName}
-                    onChange={(e) => onChangeCustomerName(e.target.value)}
+                    onChange={(e) => {
+                      onChangeCustomerName(e.target.value);
+                      clearFieldError('customerName');
+                    }}
                     placeholder="Ex: Aminatou Bouba"
                     style={{
                       backgroundColor: 'var(--bg-subtle)',
-                      borderColor: 'var(--border-hairline)',
+                      borderColor: fieldErrors.customerName ? 'var(--err-dot)' : 'var(--border-hairline)',
                       color: 'var(--ink-primary)',
                     }}
                     className="w-full h-11 px-3.5 rounded-xl border text-[13.5px] focus:outline-none focus:border-[var(--ink-primary)]"
@@ -533,19 +610,21 @@ export const CartCheckoutSheet: React.FC<CartCheckoutSheetProps> = ({
 
                 <div className="space-y-1.5">
                   <label className="text-[12px] font-medium block" style={{ color: 'var(--ink-secondary)' }}>
-                    Téléphone {channel === 'LIVRAISON' ? '*' : '(chiffres uniquement · fidélité)'}
+                    Téléphone Cameroun (9 chiffres) <span style={{ color: 'var(--err-dot)' }}>*</span>
                   </label>
+                  <FieldErrorAlert message={fieldErrors.customerPhone} />
                   <input
                     type="tel"
                     inputMode="numeric"
-                    pattern="[0-9+\s]*"
-                    required={channel === 'LIVRAISON'}
                     value={customerPhone}
-                    onChange={(e) => onChangeCustomerPhone(sanitizePhoneInput(e.target.value))}
+                    onChange={(e) => {
+                      onChangeCustomerPhone(sanitizePhoneInput(e.target.value));
+                      clearFieldError('customerPhone');
+                    }}
                     placeholder="+237 6 99 00 00 00"
                     style={{
                       backgroundColor: 'var(--bg-subtle)',
-                      borderColor: 'var(--border-hairline)',
+                      borderColor: fieldErrors.customerPhone ? 'var(--err-dot)' : 'var(--border-hairline)',
                       color: 'var(--ink-primary)',
                     }}
                     className="w-full h-11 px-3.5 rounded-xl border text-[13.5px] font-mono focus:outline-none focus:border-[var(--ink-primary)]"

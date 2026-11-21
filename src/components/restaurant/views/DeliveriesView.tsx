@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   Bike,
   Camera,
   Check,
@@ -6,6 +7,7 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Flag,
   KeyRound,
   LocateFixed,
   Lock,
@@ -21,7 +23,7 @@ import {
 } from 'lucide-react';
 import React, { useMemo, useState } from 'react';
 import { useErp } from '../../../store/erp.context';
-import type { DeliveryStatus, ErpOrder } from '../../../types/erp';
+import type { DeliveryStatus } from '../../../types/erp';
 import { formatFCFA } from '../../../utils/currency';
 import { buildGoogleMapsPinUrl } from '../../../utils/geo';
 import {
@@ -56,16 +58,23 @@ const deliveryMeta = (s?: DeliveryStatus): { label: string; tone: PillTone } => 
 };
 
 export const DeliveriesView: React.FC = () => {
-  const { state, assignDriver, updateDeliveryStatus, addDriver, toggleDriverAvailability } = useErp();
+  const { state, assignDriver, updateDeliveryStatus, addDriver, toggleDriverAvailability, flagDeliveryProof } = useErp();
 
   const [tab, setTab] = useState<'ORDERS' | 'DRIVERS'>('ORDERS');
   const [driverModalOpen, setDriverModalOpen] = useState(false);
-  const [proofViewOrder, setProofViewOrder] = useState<ErpOrder | null>(null);
+  const [proofViewOrderId, setProofViewOrderId] = useState<string | null>(null);
   const [revealedOverrides, setRevealedOverrides] = useState<Record<string, boolean>>({});
+  const [flagReason, setFlagReason] = useState('Photo non conforme au colis du restaurant');
+  const [driverFormErrors, setDriverFormErrors] = useState<{ name?: string; phone?: string }>({});
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('+237 6 ');
   const [vehicleInfo, setVehicleInfo] = useState('Moto Sanili 125 · EN-');
   const [zone, setZone] = useState('Domayo · Maroua Centre');
+
+  const proofViewOrder = useMemo(
+    () => (proofViewOrderId ? state.orders.find((o) => o.id === proofViewOrderId) || null : null),
+    [proofViewOrderId, state.orders]
+  );
 
   const deliveryOrders = useMemo(
     () => state.orders.filter((o) => o.channel === 'LIVRAISON'),
@@ -78,12 +87,19 @@ export const DeliveriesView: React.FC = () => {
 
   const handleAddDriver = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    const errs: { name?: string; phone?: string } = {};
+    if (name.trim().length < 2) errs.name = 'Saisissez le nom complet du livreur.';
+    if (phone.replace(/\D/g, '').length < 9) errs.phone = 'Saisissez un numéro camerounais valide.';
+    if (Object.keys(errs).length > 0) {
+      setDriverFormErrors(errs);
+      return;
+    }
+    setDriverFormErrors({});
     addDriver({
       name: name.trim(),
       phone: phone.trim(),
-      vehicleInfo: vehicleInfo.trim(),
-      zone: zone.trim(),
+      vehicleInfo: vehicleInfo.trim() || 'Moto',
+      zone: zone.trim() || 'Maroua Centre',
       isAvailable: true,
     });
     setName('');
@@ -223,10 +239,20 @@ export const DeliveriesView: React.FC = () => {
                             </button>
                           )}
                           {ord.deliveryProof && (
-                            <StatusPill tone={ord.deliveryProof.verifiedByPin ? 'ok' : 'warn'}>
-                              {ord.deliveryProof.verifiedByPin
-                                ? 'Photo GPS + PIN OK'
-                                : 'Dérogation Caisse + Signature'}
+                            <StatusPill
+                              tone={
+                                ord.deliveryProof.flaggedReason
+                                  ? 'err'
+                                  : ord.deliveryProof.verifiedByPin
+                                    ? 'ok'
+                                    : 'warn'
+                              }
+                            >
+                              {ord.deliveryProof.flaggedReason
+                                ? 'Preuve contestée'
+                                : ord.deliveryProof.verifiedByPin
+                                  ? 'Photo GPS + PIN OK'
+                                  : 'Dérogation Caisse + Signature'}
                             </StatusPill>
                           )}
                           {ord.deliveryProof?.geo && (
@@ -249,7 +275,7 @@ export const DeliveriesView: React.FC = () => {
                         {(ord.deliveryProof || ord.clientConfirmation) && (
                           <button
                             type="button"
-                            onClick={() => setProofViewOrder(ord)}
+                            onClick={() => setProofViewOrderId(ord.id)}
                             className="inline-flex items-center gap-1 font-semibold hover:underline cursor-pointer"
                             style={{ color: 'var(--accent)' }}
                           >
@@ -378,25 +404,55 @@ export const DeliveriesView: React.FC = () => {
         subtitle="Moto-livreur rattaché au restaurant à Maroua"
         maxWidth="sm"
       >
-        <form onSubmit={handleAddDriver} className="space-y-3.5">
+        <form noValidate onSubmit={handleAddDriver} className="space-y-3.5">
           <Field label="Nom complet" required>
+            {driverFormErrors.name && (
+              <div
+                role="alert"
+                className="mb-1.5 px-2.5 py-1 rounded-lg border text-[11.5px] font-medium flex items-center gap-1.5"
+                style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
+              >
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{driverFormErrors.name}</span>
+              </div>
+            )}
             <input
               type="text"
-              required
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setDriverFormErrors((p) => ({ ...p, name: undefined }));
+              }}
               placeholder="ex: Boubakari Issa"
-              style={inputBaseStyle}
+              style={{
+                ...inputBaseStyle,
+                borderColor: driverFormErrors.name ? 'var(--err-dot)' : inputBaseStyle.borderColor,
+              }}
               className={inputBaseClass}
             />
           </Field>
           <Field label="Téléphone" required>
+            {driverFormErrors.phone && (
+              <div
+                role="alert"
+                className="mb-1.5 px-2.5 py-1 rounded-lg border text-[11.5px] font-medium flex items-center gap-1.5"
+                style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
+              >
+                <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                <span>{driverFormErrors.phone}</span>
+              </div>
+            )}
             <input
               type="text"
-              required
               value={phone}
-              onChange={(e) => setPhone(e.target.value)}
-              style={inputBaseStyle}
+              onChange={(e) => {
+                setPhone(e.target.value);
+                setDriverFormErrors((p) => ({ ...p, phone: undefined }));
+              }}
+              style={{
+                ...inputBaseStyle,
+                borderColor: driverFormErrors.phone ? 'var(--err-dot)' : inputBaseStyle.borderColor,
+              }}
               className={inputBaseClass}
             />
           </Field>
@@ -431,7 +487,7 @@ export const DeliveriesView: React.FC = () => {
       </DialogModal>
       <DialogModal
         isOpen={Boolean(proofViewOrder)}
-        onClose={() => setProofViewOrder(null)}
+        onClose={() => setProofViewOrderId(null)}
         title={`Dossier Preuves Livraison — ${proofViewOrder?.orderNumber || ''}`}
         subtitle={proofViewOrder ? `${proofViewOrder.customerName} · ${proofViewOrder.deliveryNeighborhood || 'Maroua'}` : ''}
         maxWidth="lg"
@@ -519,6 +575,58 @@ export const DeliveriesView: React.FC = () => {
                   )}
 
                   {proofViewOrder.deliveryProof.note && <div>Note : {proofViewOrder.deliveryProof.note}</div>}
+
+                  {/* Score qualité photo + Contestation Gérant */}
+                  <div className="pt-2 border-t space-y-2" style={{ borderColor: 'var(--border-hairline)' }}>
+                    {typeof proofViewOrder.deliveryProof.photoQualityScore === 'number' && (
+                      <div className="text-[11px] font-medium" style={{ color: 'var(--ink-secondary)' }}>
+                        Analyse automatique hors-ligne : <strong>Qualité {proofViewOrder.deliveryProof.photoQualityScore} %</strong>
+                      </div>
+                    )}
+
+                    {proofViewOrder.deliveryProof.flaggedReason ? (
+                      <div
+                        className="p-2.5 rounded-lg border text-[11.5px] font-medium space-y-0.5"
+                        style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
+                      >
+                        <div className="font-semibold flex items-center gap-1">
+                          <Flag className="w-3.5 h-3.5" />
+                          Preuve contestée par {proofViewOrder.deliveryProof.flaggedBy}
+                        </div>
+                        <div>Motif : {proofViewOrder.deliveryProof.flaggedReason}</div>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <select
+                          value={flagReason}
+                          onChange={(e) => setFlagReason(e.target.value)}
+                          style={{
+                            backgroundColor: 'var(--bg-surface)',
+                            borderColor: 'var(--border-hairline)',
+                            color: 'var(--ink-primary)',
+                          }}
+                          className="flex-1 h-8 px-2 rounded-lg border text-[11px]"
+                        >
+                          <option value="Photo non conforme au colis du restaurant">Photo hors sujet / pas un colis</option>
+                          <option value="Position GPS incohérente avec le quartier">GPS incohérent avec le quartier</option>
+                          <option value="Colis endommagé ou incomplet">Colis endommagé / contesté</option>
+                        </select>
+                        <button
+                          type="button"
+                          onClick={() => flagDeliveryProof(proofViewOrder.id, flagReason)}
+                          className="h-8 px-2.5 rounded-lg border text-[11px] font-semibold inline-flex items-center gap-1 shrink-0 cursor-pointer"
+                          style={{
+                            backgroundColor: 'var(--err-bg)',
+                            borderColor: 'var(--err-border)',
+                            color: 'var(--err-text)',
+                          }}
+                        >
+                          <Flag className="w-3 h-3" />
+                          Contester
+                        </button>
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>

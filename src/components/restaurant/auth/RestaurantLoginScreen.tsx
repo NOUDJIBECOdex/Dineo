@@ -1,4 +1,4 @@
-import { ArrowRight, ExternalLink, Lock, ShieldCheck, User } from 'lucide-react';
+import { AlertCircle, ArrowRight, ExternalLink, Lock, ShieldCheck, User } from 'lucide-react';
 import React, { useState } from 'react';
 import { useErp } from '../../../store/erp.context';
 import { Btn, Field, RestaurantLogo, inputBaseClass, inputBaseStyle } from '../ui/Primitives';
@@ -15,11 +15,20 @@ export const RestaurantLoginScreen: React.FC<RestaurantLoginScreenProps> = ({
   const { state, login, quickLogin } = useErp();
   const [username, setUsername] = useState(state.users[0]?.username || 'ousmane.admin');
   const [password, setPassword] = useState('••••••••');
+  const [fieldErrors, setFieldErrors] = useState<{ username?: string; password?: string }>({});
   const [error, setError] = useState('');
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    const errs: { username?: string; password?: string } = {};
+    if (!username.trim()) errs.username = 'Veuillez saisir votre identifiant employé.';
+    if (!password.trim()) errs.password = 'Veuillez saisir votre mot de passe.';
+    if (Object.keys(errs).length > 0) {
+      setFieldErrors(errs);
+      return;
+    }
+    setFieldErrors({});
     const res = login(username.trim(), password);
     if (!res.ok) {
       setError(res.error || 'Identifiants incorrects.');
@@ -68,8 +77,18 @@ export const RestaurantLoginScreen: React.FC<RestaurantLoginScreenProps> = ({
             </div>
           )}
 
-          <form onSubmit={handleSubmit} className="space-y-4">
+          <form noValidate onSubmit={handleSubmit} className="space-y-4">
             <Field label="Identifiant (Login)" required>
+              {fieldErrors.username && (
+                <div
+                  role="alert"
+                  className="mb-1.5 px-2.5 py-1 rounded-lg border text-[11.5px] font-medium flex items-center gap-1.5 animate-dineo-shake"
+                  style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
+                >
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{fieldErrors.username}</span>
+                </div>
+              )}
               <div className="relative">
                 <User
                   className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -77,17 +96,32 @@ export const RestaurantLoginScreen: React.FC<RestaurantLoginScreenProps> = ({
                 />
                 <input
                   type="text"
-                  required
                   value={username}
-                  onChange={(e) => setUsername(e.target.value)}
+                  onChange={(e) => {
+                    setUsername(e.target.value);
+                    setFieldErrors((p) => ({ ...p, username: undefined }));
+                  }}
                   placeholder="ex: ousmane.admin"
-                  style={inputBaseStyle}
+                  style={{
+                    ...inputBaseStyle,
+                    borderColor: fieldErrors.username ? 'var(--err-dot)' : inputBaseStyle.borderColor,
+                  }}
                   className={`${inputBaseClass} pl-9 h-10`}
                 />
               </div>
             </Field>
 
             <Field label="Mot de passe" required>
+              {fieldErrors.password && (
+                <div
+                  role="alert"
+                  className="mb-1.5 px-2.5 py-1 rounded-lg border text-[11.5px] font-medium flex items-center gap-1.5 animate-dineo-shake"
+                  style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
+                >
+                  <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                  <span>{fieldErrors.password}</span>
+                </div>
+              )}
               <div className="relative">
                 <Lock
                   className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none"
@@ -95,11 +129,16 @@ export const RestaurantLoginScreen: React.FC<RestaurantLoginScreenProps> = ({
                 />
                 <input
                   type="password"
-                  required
                   value={password}
-                  onChange={(e) => setPassword(e.target.value)}
+                  onChange={(e) => {
+                    setPassword(e.target.value);
+                    setFieldErrors((p) => ({ ...p, password: undefined }));
+                  }}
                   placeholder="••••••••"
-                  style={inputBaseStyle}
+                  style={{
+                    ...inputBaseStyle,
+                    borderColor: fieldErrors.password ? 'var(--err-dot)' : inputBaseStyle.borderColor,
+                  }}
                   className={`${inputBaseClass} pl-9 h-10`}
                 />
               </div>

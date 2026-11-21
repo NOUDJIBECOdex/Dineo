@@ -1,4 +1,5 @@
 import {
+  AlertCircle,
   ArrowLeft,
   BellRing,
   Bike,
@@ -20,6 +21,7 @@ import {
   Phone,
   RefreshCw,
   ShieldAlert,
+  ShieldBan,
   ShieldCheck,
   Sun,
   Truck,
@@ -50,6 +52,7 @@ import type { ErpOrder, GeoSnapshot, KitchenStatus, PaymentMethod } from '../../
 import { formatFCFA } from '../../utils/currency';
 import { captureCurrentGeo, formatGeoWatermark, getFreshCachedGeo } from '../../utils/geo';
 import { compressAndWatermarkProofPhoto } from '../../utils/image';
+import { inspectDeliveryProofPhoto } from '../../utils/photoInspector';
 import { soundNotifier } from '../../utils/sound';
 
 type DriverTab = 'MISSIONS' | 'HISTORY' | 'EARNINGS' | 'PROFILE';
@@ -87,6 +90,8 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
   const [deliveryNote, setDeliveryNote] = useState('');
   const [proofPhoto, setProofPhoto] = useState<string>('');
   const [proofGeo, setProofGeo] = useState<GeoSnapshot | undefined>(undefined);
+  const [photoQualityScore, setPhotoQualityScore] = useState<number | undefined>(undefined);
+  const [photoRejection, setPhotoRejection] = useState<string>('');
   const [photoLoading, setPhotoLoading] = useState(false);
   const [pinCode, setPinCode] = useState('');
   const [pinShake, setPinShake] = useState(false);
@@ -95,6 +100,9 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
   const [managerOverrideCode, setManagerOverrideCode] = useState('');
   const [recipientName, setRecipientName] = useState('');
   const [recipientSignature, setRecipientSignature] = useState('');
+  const [fieldErrors, setFieldErrors] = useState<
+    Partial<Record<'photo' | 'pinCode' | 'recipientName' | 'recipientSignature' | 'managerOverrideCode', string>>
+  >({});
   const [proofError, setProofError] = useState('');
   const [reconcileSent, setReconcileSent] = useState(false);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
@@ -311,13 +319,38 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
       setBypassPinMode(!targetOrder.deliveryCode);
       setProofPhoto('');
       setProofGeo(undefined);
+      setPhotoQualityScore(undefined);
+      setPhotoRejection('');
+      setFieldErrors({});
     }
 
     setPhotoLoading(true);
     setProofError('');
+    setPhotoRejection('');
+    setFieldErrors((prev) => {
+      const next = { ...prev };
+      delete next.photo;
+      return next;
+    });
+
     try {
+      // 1. Inspection forensique anti-fraude (doigt sur caméra, image noire, mur uni, flou, galerie)
+      const inspection = await inspectDeliveryProofPhoto(file);
+      if (!inspection.valid) {
+        setProofPhoto('');
+        setPhotoQualityScore(undefined);
+        setPhotoRejection(
+          inspection.reason ||
+            'Photo non conforme. Reprenez une photo nette du colis livré.'
+        );
+        soundNotifier.playErrorFeedback();
+        return;
+      }
+
+      // 2. Capture GPS + filigrane indélébile horodaté + score qualité
       const geo = getFreshCachedGeo() || (await captureCurrentGeo(4500));
       setProofGeo(geo);
+      setPhotoQualityScore(inspection.score);
 
       const nowLabel = new Date().toLocaleString('fr-FR', {
         day: '2-digit',
@@ -329,13 +362,14 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
       const stamped = await compressAndWatermarkProofPhoto(
         file,
         `${targetOrder.orderNumber} · ${targetOrder.deliveryNeighborhood || 'Maroua'} · ${state.settings.name}`,
-        `${nowLabel} · Livreur : ${currentDriver?.name || 'Livreur'}`,
+        `${nowLabel} · ${currentDriver?.name || 'Livreur'} · Netteté ${inspection.score}%`,
         formatGeoWatermark(geo),
         Boolean(geo)
       );
       setProofPhoto(stamped);
     } catch {
-      setProofError('Impossible de traiter la photo. Appuyez sur « Reprendre » pour réessayer.');
+      setPhotoRejection('Impossible d’analyser la photo. Appuyez sur « Reprendre » pour réessayer.');
+      soundNotifier.playErrorFeedback();
     } finally {
       pendingCameraOrderRef.current = null;
       setPhotoLoading(false);
@@ -347,11 +381,14 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
     setDeliveringOrder(null);
     setProofPhoto('');
     setProofGeo(undefined);
+    setPhotoQualityScore(undefined);
+    setPhotoRejection('');
     setPinCode('');
     setManagerOverrideCode('');
     setRecipientName('');
     setRecipientSignature('');
     setDeliveryNote('');
+    setFieldErrors({});
     setProofError('');
   };
 
@@ -360,15 +397,46 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
     if (!deliveringOrder) return;
     setProofError('');
 
+    const nextFieldErrors: Partial<
+      Record<'photo' | 'pinCode' | 'recipientName' | 'recipientSignature' | 'managerOverrideCode', string>
+    > = {};
+
     if (!proofPhoto) {
-      triggerPinErrorFeedback('Prenez d’abord une photo du colis remis avant de confirmer la livraison.');
+      nextFieldErrors.photo =
+        photoRejection || 'Prenez d’abord une photo nette et valide du colis remis au client.';
+    }
+
+    if (deliveringOrder.deliveryCode) {
+      if (!bypassPinMode) {
+        if (pinCode.trim().length < 4) {
+          nextFieldErrors.pinCode = 'Saisissez les 4 chiffres du code de remise affiché chez le client.';
+        }
+      } else {
+        if (recipientName.trim().length < 2) {
+          nextFieldErrors.recipientName = 'Indiquez le nom complet de la personne qui réceptionne le colis.';
+        }
+        if (!recipientSignature) {
+          nextFieldErrors.recipientSignature = 'La signature au doigt du réceptionnaire est obligatoire.';
+        }
+        if (managerOverrideCode.trim().length < 4) {
+          nextFieldErrors.managerOverrideCode = 'Saisissez le code dérogation à 4 chiffres dicté par la Caisse.';
+        }
+      }
+    }
+
+    if (Object.keys(nextFieldErrors).length > 0) {
+      setFieldErrors(nextFieldErrors);
+      triggerPinErrorFeedback(Object.values(nextFieldErrors)[0] || 'Vérifiez les champs indiqués en rouge.');
       return;
     }
+
+    setFieldErrors({});
 
     const remaining = Math.max(0, deliveringOrder.total - deliveringOrder.amountPaid);
     const res = completeDeliveryWithProof({
       orderId: deliveringOrder.id,
       photoDataUrl: proofPhoto,
+      photoQualityScore,
       geo: proofGeo,
       pinEntered: bypassPinMode ? undefined : pinCode,
       bypassPinReason: bypassPinMode ? bypassReason : undefined,
@@ -381,6 +449,11 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
     });
 
     if (!res.ok) {
+      if (bypassPinMode) {
+        setFieldErrors({ managerOverrideCode: res.error || 'Code de dérogation Caisse incorrect.' });
+      } else {
+        setFieldErrors({ pinCode: res.error || 'Code de remise client incorrect.' });
+      }
       triggerPinErrorFeedback(res.error || 'Validation impossible.');
       return;
     }
@@ -1267,70 +1340,113 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
               </button>
             </div>
 
-            {/* Contenu défilable : Photo prise en haut → Scroll vers Code de remise & Encaissement */}
+            {/* Contenu défilable : Photo vérifiée en haut → Scroll vers Code de remise & Encaissement */}
             <form
+              noValidate
               onSubmit={handleConfirmDelivered}
               className="flex-1 overflow-y-auto overscroll-contain p-4 space-y-5"
             >
-              {proofError && (
-                <div
-                  className="p-3 rounded-xl border text-[12.5px] font-medium"
-                  style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
-                >
-                  {proofError}
-                </div>
-              )}
-
-              {/* Photo de preuve déjà capturée */}
-              <div
-                className="rounded-2xl overflow-hidden border relative"
-                style={{ borderColor: proofPhoto ? 'var(--ok-border)' : 'var(--border-hairline)', backgroundColor: 'var(--bg-subtle)' }}
-              >
-                {photoLoading ? (
-                  <div className="h-52 flex flex-col items-center justify-center gap-2 text-[13px]" style={{ color: 'var(--ink-muted)' }}>
-                    <Camera className="w-6 h-6 animate-pulse" style={{ color: 'var(--accent)' }} />
-                    <span>Horodatage de la photo…</span>
+              {/* Photo de preuve déjà capturée OU Alerte de censure anti-fraude */}
+              <div className="space-y-1.5">
+                {fieldErrors.photo && !photoRejection && (
+                  <div
+                    role="alert"
+                    className="px-2.5 py-1.5 rounded-lg border text-[11.5px] font-medium flex items-center gap-1.5 animate-dineo-shake"
+                    style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
+                  >
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                    <span>{fieldErrors.photo}</span>
                   </div>
-                ) : proofPhoto ? (
-                  <>
-                    <img
-                      src={proofPhoto}
-                      alt="Preuve de livraison horodatée"
-                      className="w-full max-h-64 object-cover block"
-                    />
+                )}
+
+                <div
+                  className="rounded-2xl overflow-hidden border relative"
+                  style={{
+                    borderColor: photoRejection
+                      ? 'var(--err-dot)'
+                      : proofPhoto
+                        ? 'var(--ok-border)'
+                        : 'var(--border-hairline)',
+                    backgroundColor: photoRejection ? 'var(--err-bg)' : 'var(--bg-subtle)',
+                  }}
+                >
+                  {photoLoading ? (
+                    <div className="h-52 flex flex-col items-center justify-center gap-2 text-[13px]" style={{ color: 'var(--ink-muted)' }}>
+                      <Camera className="w-6 h-6 animate-pulse" style={{ color: 'var(--accent)' }} />
+                      <span>Vérification anti-fraude & GPS en cours…</span>
+                    </div>
+                  ) : photoRejection ? (
+                    <div className="p-5 flex flex-col items-center text-center gap-3 animate-dineo-shake">
+                      <div
+                        className="w-11 h-11 rounded-full flex items-center justify-center text-white"
+                        style={{ backgroundColor: 'var(--err-dot)' }}
+                      >
+                        <ShieldBan className="w-5 h-5" />
+                      </div>
+                      <div className="space-y-1">
+                        <div className="text-[13.5px] font-semibold" style={{ color: 'var(--err-text)' }}>
+                          Photo censurée — Non recevable
+                        </div>
+                        <p className="text-[12px] leading-snug max-w-xs" style={{ color: 'var(--err-text)' }}>
+                          {photoRejection}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          pendingCameraOrderRef.current = deliveringOrder;
+                          cameraInputRef.current?.click();
+                        }}
+                        style={{ backgroundColor: 'var(--accent)', color: '#FFFFFF' }}
+                        className="h-10 px-4 rounded-xl text-[12.5px] font-semibold inline-flex items-center gap-1.5 cursor-pointer active:scale-95 transition-transform"
+                      >
+                        <Camera className="w-4 h-4" />
+                        Reprendre une vraie photo du colis
+                      </button>
+                    </div>
+                  ) : proofPhoto ? (
+                    <>
+                      <img
+                        src={proofPhoto}
+                        alt="Preuve de livraison horodatée"
+                        className="w-full max-h-64 object-cover block"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          pendingCameraOrderRef.current = deliveringOrder;
+                          cameraInputRef.current?.click();
+                        }}
+                        className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-full text-[11.5px] font-medium text-white inline-flex items-center gap-1 cursor-pointer backdrop-blur-sm"
+                        style={{ backgroundColor: 'rgba(16, 16, 14, 0.68)' }}
+                      >
+                        <RefreshCw className="w-3 h-3" />
+                        Reprendre
+                      </button>
+                      <span
+                        style={{ backgroundColor: proofGeo ? 'var(--ok-dot)' : 'var(--warn-dot)' }}
+                        className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-full text-[11px] font-semibold text-white inline-flex items-center gap-1"
+                      >
+                        <LocateFixed className="w-3 h-3" />
+                        {proofGeo
+                          ? `OK ${photoQualityScore ?? 85}% · GPS ±${proofGeo.accuracy} m`
+                          : `OK ${photoQualityScore ?? 85}% · Horodatée`}
+                      </span>
+                    </>
+                  ) : (
                     <button
                       type="button"
                       onClick={() => {
                         pendingCameraOrderRef.current = deliveringOrder;
                         cameraInputRef.current?.click();
                       }}
-                      className="absolute top-2.5 left-2.5 px-2.5 py-1 rounded-full text-[11.5px] font-medium text-white inline-flex items-center gap-1 cursor-pointer backdrop-blur-sm"
-                      style={{ backgroundColor: 'rgba(16, 16, 14, 0.68)' }}
+                      className="w-full h-44 flex flex-col items-center justify-center gap-2 cursor-pointer"
                     >
-                      <RefreshCw className="w-3 h-3" />
-                      Reprendre
+                      <Camera className="w-6 h-6" style={{ color: 'var(--accent)' }} />
+                      <span className="text-[13px] font-medium">Prendre la photo du colis</span>
                     </button>
-                    <span
-                      style={{ backgroundColor: proofGeo ? 'var(--ok-dot)' : 'var(--warn-dot)' }}
-                      className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-full text-[11px] font-semibold text-white inline-flex items-center gap-1"
-                    >
-                      <LocateFixed className="w-3 h-3" />
-                      {proofGeo ? `GPS ±${proofGeo.accuracy} m` : 'Horodatée'}
-                    </span>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    onClick={() => {
-                      pendingCameraOrderRef.current = deliveringOrder;
-                      cameraInputRef.current?.click();
-                    }}
-                    className="w-full h-44 flex flex-col items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <Camera className="w-6 h-6" style={{ color: 'var(--accent)' }} />
-                    <span className="text-[13px] font-medium">Prendre la photo du colis</span>
-                  </button>
-                )}
+                  )}
+                </div>
               </div>
 
               {/* Code de remise client (4 chiffres) OU Procédure anti-fraude Dérogation Caisse + Signature */}
@@ -1350,6 +1466,7 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
                       onClick={() => {
                         setBypassPinMode((b) => !b);
                         setProofError('');
+                        setFieldErrors({});
                       }}
                       className="text-[11.5px] underline cursor-pointer"
                       style={{ color: 'var(--ink-muted)' }}
@@ -1359,26 +1476,39 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
                   </div>
 
                   {!bypassPinMode ? (
-                    <input
-                      type="text"
-                      inputMode="numeric"
-                      autoComplete="one-time-code"
-                      maxLength={4}
-                      value={pinCode}
-                      onChange={(e) => {
-                        setProofError('');
-                        setPinCode(e.target.value.replace(/\D/g, '').slice(0, 4));
-                      }}
-                      placeholder="• • • •"
-                      style={{
-                        backgroundColor: 'var(--bg-subtle)',
-                        borderColor: pinShake || proofError ? 'var(--err-dot)' : 'var(--border-hairline)',
-                        color: 'var(--ink-primary)',
-                      }}
-                      className={`w-full h-12 px-4 rounded-xl border text-center font-mono text-[22px] tracking-[0.45em] font-semibold focus:outline-none focus:border-[var(--accent)] ${
-                        pinShake ? 'animate-dineo-shake' : ''
-                      }`}
-                    />
+                    <div className="space-y-1.5">
+                      {(fieldErrors.pinCode || proofError) && (
+                        <div
+                          role="alert"
+                          className="px-2.5 py-1.5 rounded-lg border text-[11.5px] font-medium flex items-center gap-1.5 animate-dineo-shake"
+                          style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
+                        >
+                          <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                          <span>{fieldErrors.pinCode || proofError}</span>
+                        </div>
+                      )}
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        autoComplete="one-time-code"
+                        maxLength={4}
+                        value={pinCode}
+                        onChange={(e) => {
+                          setProofError('');
+                          setFieldErrors((p) => ({ ...p, pinCode: undefined }));
+                          setPinCode(e.target.value.replace(/\D/g, '').slice(0, 4));
+                        }}
+                        placeholder="• • • •"
+                        style={{
+                          backgroundColor: 'var(--bg-subtle)',
+                          borderColor: pinShake || fieldErrors.pinCode || proofError ? 'var(--err-dot)' : 'var(--border-hairline)',
+                          color: 'var(--ink-primary)',
+                        }}
+                        className={`w-full h-12 px-4 rounded-xl border text-center font-mono text-[22px] tracking-[0.45em] font-semibold focus:outline-none focus:border-[var(--accent)] ${
+                          pinShake ? 'animate-dineo-shake' : ''
+                        }`}
+                      />
+                    </div>
                   ) : (
                     <div
                       className="p-3.5 rounded-xl border space-y-3"
@@ -1413,25 +1543,68 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
                         <option value="Client sans smartphone (commande vocale)">Client sans smartphone (commande vocale)</option>
                       </select>
 
-                      <input
-                        type="text"
-                        value={recipientName}
-                        onChange={(e) => setRecipientName(e.target.value)}
-                        placeholder="Nom complet du réceptionnaire *"
-                        style={{
-                          backgroundColor: 'var(--bg-surface)',
-                          borderColor: 'var(--border-hairline)',
-                          color: 'var(--ink-primary)',
-                        }}
-                        className="w-full h-10 px-3 rounded-xl border text-[13px] focus:outline-none focus:border-[var(--accent)]"
-                      />
+                      <div className="space-y-1">
+                        {fieldErrors.recipientName && (
+                          <div
+                            role="alert"
+                            className="px-2.5 py-1 rounded-lg border text-[11.5px] font-medium flex items-center gap-1.5 animate-dineo-shake"
+                            style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
+                          >
+                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                            <span>{fieldErrors.recipientName}</span>
+                          </div>
+                        )}
+                        <input
+                          type="text"
+                          value={recipientName}
+                          onChange={(e) => {
+                            setRecipientName(e.target.value);
+                            setFieldErrors((p) => ({ ...p, recipientName: undefined }));
+                          }}
+                          placeholder="Nom complet du réceptionnaire *"
+                          style={{
+                            backgroundColor: 'var(--bg-surface)',
+                            borderColor: fieldErrors.recipientName ? 'var(--err-dot)' : 'var(--border-hairline)',
+                            color: 'var(--ink-primary)',
+                          }}
+                          className="w-full h-10 px-3 rounded-xl border text-[13px] focus:outline-none focus:border-[var(--accent)]"
+                        />
+                      </div>
 
-                      <SignaturePad value={recipientSignature} onChange={setRecipientSignature} />
+                      <div className="space-y-1">
+                        {fieldErrors.recipientSignature && (
+                          <div
+                            role="alert"
+                            className="px-2.5 py-1 rounded-lg border text-[11.5px] font-medium flex items-center gap-1.5 animate-dineo-shake"
+                            style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
+                          >
+                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                            <span>{fieldErrors.recipientSignature}</span>
+                          </div>
+                        )}
+                        <SignaturePad
+                          value={recipientSignature}
+                          onChange={(sig) => {
+                            setRecipientSignature(sig);
+                            if (sig) setFieldErrors((p) => ({ ...p, recipientSignature: undefined }));
+                          }}
+                        />
+                      </div>
 
                       <div className="space-y-1">
                         <label className="text-[11.5px] font-semibold block" style={{ color: 'var(--warn-text)' }}>
                           Code dérogation dicté par la Caisse (4 chiffres) *
                         </label>
+                        {(fieldErrors.managerOverrideCode || proofError) && (
+                          <div
+                            role="alert"
+                            className="px-2.5 py-1 rounded-lg border text-[11.5px] font-medium flex items-center gap-1.5 animate-dineo-shake"
+                            style={{ backgroundColor: 'var(--err-bg)', borderColor: 'var(--err-border)', color: 'var(--err-text)' }}
+                          >
+                            <AlertCircle className="w-3.5 h-3.5 shrink-0" />
+                            <span>{fieldErrors.managerOverrideCode || proofError}</span>
+                          </div>
+                        )}
                         <input
                           type="text"
                           inputMode="numeric"
@@ -1439,12 +1612,13 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
                           value={managerOverrideCode}
                           onChange={(e) => {
                             setProofError('');
+                            setFieldErrors((p) => ({ ...p, managerOverrideCode: undefined }));
                             setManagerOverrideCode(e.target.value.replace(/\D/g, '').slice(0, 4));
                           }}
                           placeholder="• • • •"
                           style={{
                             backgroundColor: 'var(--bg-surface)',
-                            borderColor: pinShake || proofError ? 'var(--err-dot)' : 'var(--warn-border)',
+                            borderColor: pinShake || fieldErrors.managerOverrideCode || proofError ? 'var(--err-dot)' : 'var(--warn-border)',
                             color: 'var(--ink-primary)',
                           }}
                           className={`w-full h-11 px-4 rounded-xl border text-center font-mono text-[20px] tracking-[0.45em] font-semibold focus:outline-none focus:border-[var(--accent)] ${

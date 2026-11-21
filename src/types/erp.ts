@@ -177,6 +177,12 @@ export interface DeliveryProof {
   verifiedByPin: boolean;
   /** Mode de vérification : PIN client standard ou Dérogation autorisée par la caisse + signature */
   verificationMode?: 'CLIENT_PIN' | 'MANAGER_OVERRIDE';
+  /** Score qualité forensique calculé hors-ligne (0..100) */
+  photoQualityScore?: number;
+  /** Signalement manuel par le gérant si la photo ne correspond pas à un colis du restaurant */
+  flaggedReason?: string;
+  flaggedAt?: string;
+  flaggedBy?: string;
   /** Coordonnées GPS capturées au moment de la photo */
   geo?: GeoSnapshot;
   /** Nom + signature manuscrite obligatoires en cas de dérogation sans téléphone client */

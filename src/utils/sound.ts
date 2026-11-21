@@ -33,12 +33,15 @@ class SoundNotifier {
   }
 
   /**
-   * Déclenche une vibration matérielle Android de façon sûre (sans jamais lever d'exception).
+   * Déclenche une vibration matérielle Android de façon sûre (avec repli impulsion unique pour HiOS / Tecno / Infinix).
    */
   public vibrate(pattern: number | number[]) {
     try {
       if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-        navigator.vibrate(pattern);
+        const ok = navigator.vibrate(pattern);
+        if (!ok && Array.isArray(pattern)) {
+          navigator.vibrate(240);
+        }
       }
     } catch {
       // ignore
@@ -104,7 +107,7 @@ class SoundNotifier {
       }
     }
     if (this.audioCtx && this.audioCtx.state === 'suspended') {
-      this.audioCtx.resume().catch(() => {});
+      this.audioCtx.resume().catch(() => { });
     }
     return this.audioCtx;
   }
