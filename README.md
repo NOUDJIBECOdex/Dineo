@@ -8,7 +8,13 @@ Application web complète de gestion de restaurant conçue pour le contexte loca
 | :--- | :--- | :--- |
 | **Dashboard Restaurant (ERP)** | `/` | 22 modules : Tableau de bord, Caisse POS, Cuisine KDS (alerte 5 s), Facturation 80 mm/A4, Livraisons & Dossier Preuves, Tables & QR Codes imprimables, Stocks & Recettes automatiques, Achats/Fournisseurs, Rapports analytiques, Dépenses, Salaires, Fidélité, Personnel, RBAC & Audit. |
 | **Espace Client (Mobile-First)** | `/menu` ou `/table/T-01` | Menu digital QR Table & Livraison Domicile, correction orthographique en direct sur les notes, demande d'addition intelligente, suivi en direct, code secret de remise 4 chiffres & confirmation de réception avec photo. |
-| **Espace Livreur (Mobile-First)** | `/livreur` | Réservation de courses, verrouillage de départ tant que la cuisine n'est pas prête, alerte sonore 10 s + vibration dès que le colis est prêt, caméra arrière directe avec filigrane horodaté anti-fraude, validation par code PIN client & pointage caisse de fin de service. |
+| **Espace Livreur (Mobile-First)** | `/livreur` | Réservation de courses, verrouillage de départ tant que la cuisine n'est pas prête, alerte sonore 10 s + vibrations Android dès que le colis est prêt, caméra arrière directe avec **filigrane horodaté + coordonnées GPS**, validation par code PIN client ou **Dérogation Caisse sécurisée + signature manuscrite**, vibration d'erreur sur mauvais code & pointage caisse de fin de service. |
+
+## Architecture Offline-First (Maroua · 0 % internet requis)
+
+- **PWA Installable** (`public/manifest.webmanifest` + Service Worker `public/sw.js` avec pré-cache App Shell et stratégie Cache-First sur les bundles Vite) : l'application s'ouvre et fonctionne en mode avion complet.
+- **Moteur IndexedDB haute capacité (`dineo_offline_db_v1`)** : sauvegarde résiliente de l'état ERP, archivage local des preuves photos GPS & signatures manuscrites, et **file d'attente transactionnelle (Outbox FIFO)** synchronisée automatiquement dès le retour de la connexion 3G/4G.
+- **Centre Hors-Ligne intégré** : indicateur discret sur tous les écrans, simulateur de coupure réseau en 1 clic et suivi en direct des opérations en attente de synchronisation.
 
 ## Stack technique
 

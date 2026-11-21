@@ -8,14 +8,15 @@ import {
   Clock,
   KeyRound,
   MapPin,
+  PackageCheck,
   Phone,
   Radio,
   Receipt,
   ShieldCheck,
   ShoppingBag,
-  Sparkles,
   Star,
   Utensils,
+  UtensilsCrossed,
 } from 'lucide-react';
 import React, { useRef, useState } from 'react';
 import { useErp } from '../../../store/erp.context';
@@ -112,13 +113,17 @@ export const ClientTrackingTab: React.FC<ClientTrackingTabProps> = ({
       { label: 'En cuisine', desc: 'Vos plats sont en préparation', icon: ChefHat },
       { label: 'Prête', desc: 'Emballée, en attente du livreur', icon: ShoppingBag },
       { label: 'En route', desc: assignedDriver ? `Livreur : ${assignedDriver.name}` : 'En chemin vers votre quartier', icon: Bike },
-      { label: 'Livrée', desc: 'Bon appétit !', icon: Sparkles },
+      { label: 'Livrée', desc: 'Colis remis en main propre — Bon appétit !', icon: PackageCheck },
     ]
     : [
       { label: 'Reçue', desc: 'Confirmée à la caisse', icon: Radio },
       { label: 'En cuisine', desc: 'Le chef prépare votre commande', icon: ChefHat },
       { label: 'Prête', desc: currentOrder.channel === 'SUR_PLACE' ? 'Arrive à votre table' : 'Prête au comptoir', icon: Utensils },
-      { label: 'Servie', desc: 'Bon appétit ! Merci de votre visite', icon: Sparkles },
+      {
+        label: 'Servie',
+        desc: 'Bon appétit ! Merci de votre visite',
+        icon: currentOrder.channel === 'SUR_PLACE' ? UtensilsCrossed : PackageCheck,
+      },
     ];
 
   const payMeta = paymentStatusMeta(currentOrder.paymentStatus);
@@ -310,9 +315,11 @@ export const ClientTrackingTab: React.FC<ClientTrackingTabProps> = ({
               <ShieldCheck className="w-4 h-4" style={{ color: 'var(--ok-dot)' }} />
               <span>Preuve & Confirmation de réception</span>
             </div>
-            {currentOrder.deliveryProof?.verifiedByPin && (
+            {currentOrder.deliveryProof?.verifiedByPin ? (
               <StatusPill tone="ok">PIN vérifié</StatusPill>
-            )}
+            ) : currentOrder.deliveryProof?.verificationMode === 'MANAGER_OVERRIDE' ? (
+              <StatusPill tone="warn">Dérogation Caisse</StatusPill>
+            ) : null}
           </div>
 
           {/* Driver's timestamped photo proof */}

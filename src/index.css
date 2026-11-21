@@ -103,6 +103,19 @@
   }
 }
 
+@keyframes dineo-shake {
+  0%, 100% { transform: translateX(0); }
+  18% { transform: translateX(-7px); }
+  36% { transform: translateX(7px); }
+  54% { transform: translateX(-5px); }
+  72% { transform: translateX(5px); }
+  88% { transform: translateX(-2px); }
+}
+
+.animate-dineo-shake {
+  animation: dineo-shake 0.42s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+}
+
 /* Subtle custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

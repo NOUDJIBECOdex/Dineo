@@ -19,6 +19,7 @@ import {
   INITIAL_TABLES,
   INITIAL_USERS,
 } from '../mocks/maroua.seed';
+import { OfflineDb } from '../services/offline/indexeddb';
 import { realtimeService } from '../services/realtime';
 import { StorageService } from '../services/storage.service';
 import type {
@@ -32,6 +33,7 @@ import type {
   ErpOrder,
   ErpOrderItem,
   Expense,
+  GeoSnapshot,
   KitchenStatus,
   LoyaltyConfig,
   NavModuleId,
@@ -53,6 +55,7 @@ import type {
 } from '../types/erp';
 import type { OrderEvent } from '../types/events';
 import { soundNotifier } from '../utils/sound';
+import { emitOfflineOperation } from './offline.context';
 import { applyBrandTheme } from '../utils/theme';
 
 const STORE_KEY = 'erp_state_v3';
@@ -145,8 +148,14 @@ export interface CreateClientOrderInput {
 export interface CompleteDeliveryProofInput {
   orderId: string;
   photoDataUrl: string;
+  geo?: GeoSnapshot;
   pinEntered?: string;
   bypassPinReason?: string;
+  /** Code de dérogation à 4 chiffres dicté par la caisse au téléphone en cas de client sans téléphone */
+  managerOverrideEntered?: string;
+  /** Nom complet + signature manuscrite du réceptionnaire en mode dérogation */
+  recipientName?: string;
+  recipientSignature?: string;
   paymentCollected?: { amount: number; method: PaymentMethod };
   note?: string;
   driverName: string;
@@ -248,12 +257,32 @@ const fallbackDeliveryCode = (seed: string) => {
   return String(1000 + Math.abs(h));
 };
 
+/**
+ * Génère de façon déterministe et 100 % hors-ligne le code de dérogation Caisse (4 chiffres),
+ * toujours différent du code PIN client. Visible uniquement sur le tableau de bord Restaurant.
+ */
+const deriveManagerOverrideCode = (seed: string, clientPin?: string) => {
+  const salted = `SAHEL-OVERRIDE::${seed}::MAROUA`;
+  let h = 17;
+  for (let i = 0; i < salted.length; i++) {
+    h = (h * 37 + salted.charCodeAt(i) * 13) % 9000;
+  }
+  let code = String(1000 + Math.abs(h));
+  if (clientPin && code === clientPin) {
+    code = String(1000 + ((Number(code) - 1000 + 137) % 9000));
+  }
+  return code;
+};
+
 const ensureDeliveryCodes = (orders: ErpOrder[]): ErpOrder[] =>
-  orders.map((o) =>
-    o.channel === 'LIVRAISON' && !o.deliveryCode
-      ? { ...o, deliveryCode: fallbackDeliveryCode(o.orderNumber || o.id) }
-      : o
-  );
+  orders.map((o) => {
+    if (o.channel !== 'LIVRAISON') return o;
+    const deliveryCode = o.deliveryCode || fallbackDeliveryCode(o.orderNumber || o.id);
+    const managerOverrideCode =
+      o.managerOverrideCode || deriveManagerOverrideCode(o.orderNumber || o.id, deliveryCode);
+    if (deliveryCode === o.deliveryCode && managerOverrideCode === o.managerOverrideCode) return o;
+    return { ...o, deliveryCode, managerOverrideCode };
+  });
 
 const isRestaurantSurface = (): boolean => {
   if (typeof window === 'undefined') return false;
@@ -360,7 +389,8 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         waiterCalls: Array.isArray(saved.waiterCalls) ? saved.waiterCalls : [],
       };
     }
-    return getInitialState();
+    const init = getInitialState();
+    return { ...init, orders: ensureDeliveryCodes(init.orders) };
   });
 
   const [isAuthenticated, setIsAuthenticated] = useState<boolean>(() => {
@@ -376,9 +406,28 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const prevOrdersCountRef = useRef<number>(state.orders.length);
   const prevWaiterCountRef = useRef<number>(state.waiterCalls.filter((w) => !w.resolved).length);
 
-  // Persistence + BroadcastChannel realtime sync across tabs (Client Mobile ↔ Dashboard Restaurant)
+  // Récupération de secours depuis IndexedDB si localStorage était vide/nettoyé hors-ligne
+  useEffect(() => {
+    const hasLocal = StorageService.get<ErpState | null>(STORE_KEY, null);
+    if (hasLocal) return;
+    OfflineDb.loadErpSnapshot<ErpState>(STORE_KEY).then((snap) => {
+      if (snap && snap.settings && Array.isArray(snap.orders)) {
+        skipBroadcastRef.current = true;
+        setState({
+          ...getInitialState(),
+          ...snap,
+          orders: ensureDeliveryCodes(snap.orders),
+          settings: { ...INITIAL_SETTINGS, ...snap.settings },
+          waiterCalls: Array.isArray(snap.waiterCalls) ? snap.waiterCalls : [],
+        });
+      }
+    });
+  }, []);
+
+  // Persistence (localStorage + miroir IndexedDB haute capacité) + BroadcastChannel realtime sync
   useEffect(() => {
     StorageService.set(STORE_KEY, state);
+    OfflineDb.saveErpSnapshot(STORE_KEY, state).catch(() => {});
     if (skipBroadcastRef.current) {
       skipBroadcastRef.current = false;
       return;
@@ -678,6 +727,7 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
             ? `Client QR (${matchedTable?.number || input.tableNumber || 'Table'})`
             : 'Client Mobile';
 
+        const newDeliveryCode = input.channel === 'LIVRAISON' ? generateDeliveryCode() : undefined;
         const order: ErpOrder = {
           id: uid('ord'),
           orderNumber,
@@ -699,7 +749,10 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           deliveryNeighborhood: input.channel === 'LIVRAISON' ? input.deliveryNeighborhood : undefined,
           deliveryAddress: input.channel === 'LIVRAISON' ? input.deliveryAddress : undefined,
           deliveryStatus: input.channel === 'LIVRAISON' ? 'EN_ATTENTE' : undefined,
-          deliveryCode: input.channel === 'LIVRAISON' ? generateDeliveryCode() : undefined,
+          deliveryCode: newDeliveryCode,
+          managerOverrideCode: newDeliveryCode
+            ? deriveManagerOverrideCode(orderNumber, newDeliveryCode)
+            : undefined,
           notes: input.notes?.trim() || undefined,
           paymentStatus: 'IMPAYE',
           paymentMethod: input.paymentMethod,
@@ -767,6 +820,14 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         // Confirmation sonore discrète côté Client (l'alerte cuisine 5 s sonne sur l'onglet Restaurant/KDS)
         soundNotifier.playSoftConfirmChime();
+
+        emitOfflineOperation({
+          type: 'CLIENT_ORDER',
+          entityId: order.id,
+          label: `Commande ${orderNumber} · ${total.toLocaleString('fr-FR')} FCFA`,
+          summary: `${order.customerName} (${order.channel})`,
+          payloadSizeKb: 3,
+        });
 
         return {
           ...prev,
@@ -874,6 +935,7 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         const selectedTable = input.tableId ? prev.tables.find((t) => t.id === input.tableId) : undefined;
 
+        const posDeliveryCode = input.channel === 'LIVRAISON' ? generateDeliveryCode() : undefined;
         const order: ErpOrder = {
           id: uid('ord'),
           orderNumber,
@@ -895,7 +957,10 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           deliveryNeighborhood: input.deliveryNeighborhood,
           deliveryAddress: input.deliveryAddress,
           deliveryStatus: input.channel === 'LIVRAISON' ? 'EN_ATTENTE' : undefined,
-          deliveryCode: input.channel === 'LIVRAISON' ? generateDeliveryCode() : undefined,
+          deliveryCode: posDeliveryCode,
+          managerOverrideCode: posDeliveryCode
+            ? deriveManagerOverrideCode(orderNumber, posDeliveryCode)
+            : undefined,
           notes: input.notes,
           paymentStatus,
           paymentMethod: input.paymentMethod,
@@ -957,6 +1022,14 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
 
         // Déclencher l'alerte cuisine 5 secondes dès validation d'une nouvelle commande POS
         soundNotifier.playKitchenNewOrderAlarm(5);
+
+        emitOfflineOperation({
+          type: 'POS_ORDER',
+          entityId: order.id,
+          label: `Vente POS ${orderNumber} · ${total.toLocaleString('fr-FR')} FCFA`,
+          summary: `${order.customerName} (${paymentStatus})`,
+          payloadSizeKb: 3,
+        });
 
         return {
           ...prev,
@@ -1174,17 +1247,62 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
 
       const expectedCode = (target.deliveryCode || '').trim();
-      const entered = (input.pinEntered || '').trim();
-      const verifiedByPin = Boolean(expectedCode && entered === expectedCode);
+      const expectedOverride =
+        (target.managerOverrideCode || '').trim() ||
+        deriveManagerOverrideCode(target.orderNumber || target.id, expectedCode);
+      const enteredPin = (input.pinEntered || '').trim();
+      const isOverrideFlow = Boolean(input.bypassPinReason?.trim());
 
-      if (expectedCode && !verifiedByPin && !input.bypassPinReason?.trim()) {
-        return {
-          ok: false,
-          error: 'Code PIN client incorrect. Demandez le code à 4 chiffres au client ou indiquez un motif d’exception.',
-        };
+      let verifiedByPin = false;
+      let verificationMode: 'CLIENT_PIN' | 'MANAGER_OVERRIDE' = 'CLIENT_PIN';
+
+      if (!isOverrideFlow) {
+        if (expectedCode && enteredPin !== expectedCode) {
+          return {
+            ok: false,
+            error:
+              'Code de remise client incorrect. Vérifiez les 4 chiffres affichés sur le téléphone du client.',
+          };
+        }
+        verifiedByPin = Boolean(expectedCode);
+        verificationMode = 'CLIENT_PIN';
+      } else {
+        // Procédure anti-fraude stricte (impossible au livreur d'inventer seul un "client sans téléphone") :
+        // exige le code de dérogation dicté par la Caisse + Nom complet + Signature manuscrite du réceptionnaire
+        const enteredOverride = (input.managerOverrideEntered || '').trim();
+        if (enteredOverride !== expectedOverride) {
+          return {
+            ok: false,
+            error:
+              'Code de dérogation Caisse incorrect. Appelez la caisse du restaurant pour obtenir le code à 4 chiffres.',
+          };
+        }
+        if (!input.recipientName || input.recipientName.trim().length < 2) {
+          return {
+            ok: false,
+            error: 'Indiquez le nom complet de la personne qui réceptionne le colis.',
+          };
+        }
+        if (!input.recipientSignature) {
+          return {
+            ok: false,
+            error: 'Faites signer le réceptionnaire sur l’écran avant de clôturer en mode dérogation.',
+          };
+        }
+        verifiedByPin = false;
+        verificationMode = 'MANAGER_OVERRIDE';
       }
 
       const nowIso = new Date().toISOString();
+      const mediaSizeKb = Math.max(
+        15,
+        Math.round((input.photoDataUrl.length + (input.recipientSignature?.length || 0)) / 1024)
+      );
+      OfflineDb.saveMedia(`driver-proof:${target.id}`, input.photoDataUrl).catch(() => {});
+      if (input.recipientSignature) {
+        OfflineDb.saveMedia(`driver-sig:${target.id}`, input.recipientSignature).catch(() => {});
+      }
+
       setState((prev) => {
         const cur = prev.orders.find((o) => o.id === input.orderId);
         if (!cur) return prev;
@@ -1223,9 +1341,12 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
                 capturedAt: nowIso,
                 capturedBy: input.driverName,
                 verifiedByPin,
-                note: input.bypassPinReason
-                  ? `[Sans code PIN : ${input.bypassPinReason}] ${input.note || ''}`.trim()
-                  : input.note?.trim() || undefined,
+                verificationMode,
+                geo: input.geo,
+                recipientName: input.recipientName?.trim() || undefined,
+                recipientSignature: input.recipientSignature || undefined,
+                overrideReason: input.bypassPinReason?.trim() || undefined,
+                note: input.note?.trim() || undefined,
               },
               updatedAt: nowIso,
             }
@@ -1244,6 +1365,10 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           )
           : prev.drivers;
 
+        const geoSummary = input.geo
+          ? ` · GPS ${input.geo.lat.toFixed(4)},${input.geo.lng.toFixed(4)} (±${input.geo.accuracy}m)`
+          : ' · GPS non capté';
+
         return {
           ...prev,
           orders: nextOrders,
@@ -1251,14 +1376,24 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
           auditLogs: appendAudit(
             prev,
             'Livraisons',
-            verifiedByPin ? 'Livraison clôturée (Photo + PIN)' : 'Livraison clôturée (Photo · Sans PIN)',
+            verifiedByPin
+              ? 'Livraison clôturée (Photo GPS + PIN Client)'
+              : 'Livraison clôturée (Dérogation Caisse + Signature)',
             `${cur.orderNumber} par ${input.driverName}${input.paymentCollected?.amount
               ? ` · Encaissé ${input.paymentCollected.amount.toLocaleString('fr-FR')} FCFA (${input.paymentCollected.method})`
               : ''
-            }${input.bypassPinReason ? ` · Exception : ${input.bypassPinReason}` : ''}`,
+            }${isOverrideFlow ? ` · Reçu par ${input.recipientName?.trim()} (${input.bypassPinReason})` : ''}${geoSummary}`,
             { name: input.driverName, role: 'Livreur' }
           ),
         };
+      });
+
+      emitOfflineOperation({
+        type: 'DELIVERY_PROOF',
+        entityId: target.id,
+        label: `Preuve livraison ${target.orderNumber}`,
+        summary: `${input.driverName} · ${verifiedByPin ? 'Photo GPS + PIN' : 'Dérogation Caisse + Signature'}`,
+        payloadSizeKb: mediaSizeKb,
       });
 
       return { ok: true };
@@ -1269,9 +1404,23 @@ export const ErpProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   const confirmClientDeliveryReceipt = useCallback(
     (input: ConfirmClientReceiptInput) => {
       const nowIso = new Date().toISOString();
+      if (input.photoDataUrl) {
+        OfflineDb.saveMedia(`client-proof:${input.orderId}`, input.photoDataUrl).catch(() => {});
+      }
       setState((prev) => {
         const cur = prev.orders.find((o) => o.id === input.orderId);
         if (!cur) return prev;
+
+        emitOfflineOperation({
+          type: 'CLIENT_CONFIRMATION',
+          entityId: cur.id,
+          label: `Avis client ${cur.orderNumber}`,
+          summary:
+            input.status === 'RECEIVED_OK'
+              ? `Bien reçu${input.rating ? ` (${input.rating}/5 ★)` : ''}`
+              : 'Incident signalé',
+          payloadSizeKb: input.photoDataUrl ? Math.max(10, Math.round(input.photoDataUrl.length / 1024)) : 1,
+        });
 
         const nextOrders = prev.orders.map((o) =>
           o.id === input.orderId

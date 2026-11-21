@@ -9,6 +9,7 @@ import {
   Clock,
   History,
   KeyRound,
+  LocateFixed,
   Lock,
   LogOut,
   MapPin,
@@ -18,6 +19,7 @@ import {
   Package,
   Phone,
   RefreshCw,
+  ShieldAlert,
   ShieldCheck,
   Sun,
   Truck,
@@ -34,6 +36,7 @@ import {
   OrangeMoneyLogo,
   PaymentMethodMark,
 } from '../../components/common/PaymentBrandLogos';
+import { SignaturePad } from '../../components/common/SignaturePad';
 import {
   Btn,
   RestaurantLogo,
@@ -43,8 +46,9 @@ import {
 } from '../../components/restaurant/ui/Primitives';
 import { StorageService } from '../../services/storage.service';
 import { useErp } from '../../store/erp.context';
-import type { ErpOrder, KitchenStatus, PaymentMethod } from '../../types/erp';
+import type { ErpOrder, GeoSnapshot, KitchenStatus, PaymentMethod } from '../../types/erp';
 import { formatFCFA } from '../../utils/currency';
+import { captureCurrentGeo, formatGeoWatermark, getFreshCachedGeo } from '../../utils/geo';
 import { compressAndWatermarkProofPhoto } from '../../utils/image';
 import { soundNotifier } from '../../utils/sound';
 
@@ -77,19 +81,31 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
   const [readyAlertOrderId, setReadyAlertOrderId] = useState<string | null>(null);
   const [alarmRinging, setAlarmRinging] = useState(false);
 
-  // Proof of Delivery (Camera + 4-digit PIN + Doorstep Cash/MoMo Collection Modal)
+  // Proof of Delivery (Camera + GPS + 4-digit PIN / Manager Override + Signature + Doorstep Collection)
   const [deliveringOrder, setDeliveringOrder] = useState<ErpOrder | null>(null);
   const [collectedMethod, setCollectedMethod] = useState<PaymentMethod>('ESPECES');
   const [deliveryNote, setDeliveryNote] = useState('');
   const [proofPhoto, setProofPhoto] = useState<string>('');
+  const [proofGeo, setProofGeo] = useState<GeoSnapshot | undefined>(undefined);
   const [photoLoading, setPhotoLoading] = useState(false);
   const [pinCode, setPinCode] = useState('');
+  const [pinShake, setPinShake] = useState(false);
   const [bypassPinMode, setBypassPinMode] = useState(false);
-  const [bypassReason, setBypassReason] = useState('Téléphone client déchargé / commande vocale');
+  const [bypassReason, setBypassReason] = useState('Téléphone client déchargé / batterie vide');
+  const [managerOverrideCode, setManagerOverrideCode] = useState('');
+  const [recipientName, setRecipientName] = useState('');
+  const [recipientSignature, setRecipientSignature] = useState('');
   const [proofError, setProofError] = useState('');
   const [reconcileSent, setReconcileSent] = useState(false);
   const cameraInputRef = useRef<HTMLInputElement | null>(null);
   const pendingCameraOrderRef = useRef<ErpOrder | null>(null);
+
+  // Pré-chauffe discrètement le GPS dès qu'un livreur ouvre son espace pour des coordonnées instantanées à la remise
+  useEffect(() => {
+    if (activeDriverId) {
+      captureCurrentGeo(6000).catch(() => {});
+    }
+  }, [activeDriverId]);
 
   const currentDriver = useMemo(
     () => state.drivers.find((d) => d.id === activeDriverId) || null,
@@ -259,11 +275,22 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
     };
   }, [allDeliveryOrders, currentDriver, myHistory.length]);
 
-  // Lance directement la caméra arrière dès le clic sur "Confirmer la livraison"
+  // Lance directement la caméra arrière dès le clic sur "Confirmer la livraison" (et lance le fix GPS en parallèle)
   const triggerDirectCameraDelivery = (order: ErpOrder) => {
     soundNotifier.unlockAudio();
+    captureCurrentGeo(6000).catch(() => {});
     pendingCameraOrderRef.current = order;
     cameraInputRef.current?.click();
+  };
+
+  const triggerPinErrorFeedback = (message: string) => {
+    setProofError(message);
+    soundNotifier.playErrorFeedback();
+    setPinShake(false);
+    window.requestAnimationFrame(() => {
+      setPinShake(true);
+      window.setTimeout(() => setPinShake(false), 480);
+    });
   };
 
   const handleCaptureProofPhoto = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -278,13 +305,20 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
       setCollectedMethod(targetOrder.paymentMethod || 'ESPECES');
       setDeliveryNote('');
       setPinCode('');
+      setManagerOverrideCode('');
+      setRecipientName('');
+      setRecipientSignature('');
       setBypassPinMode(!targetOrder.deliveryCode);
       setProofPhoto('');
+      setProofGeo(undefined);
     }
 
     setPhotoLoading(true);
     setProofError('');
     try {
+      const geo = getFreshCachedGeo() || (await captureCurrentGeo(4500));
+      setProofGeo(geo);
+
       const nowLabel = new Date().toLocaleString('fr-FR', {
         day: '2-digit',
         month: '2-digit',
@@ -295,7 +329,9 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
       const stamped = await compressAndWatermarkProofPhoto(
         file,
         `${targetOrder.orderNumber} · ${targetOrder.deliveryNeighborhood || 'Maroua'} · ${state.settings.name}`,
-        `${nowLabel} · Livreur : ${currentDriver?.name || 'Livreur'}`
+        `${nowLabel} · Livreur : ${currentDriver?.name || 'Livreur'}`,
+        formatGeoWatermark(geo),
+        Boolean(geo)
       );
       setProofPhoto(stamped);
     } catch {
@@ -310,7 +346,11 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
     pendingCameraOrderRef.current = null;
     setDeliveringOrder(null);
     setProofPhoto('');
+    setProofGeo(undefined);
     setPinCode('');
+    setManagerOverrideCode('');
+    setRecipientName('');
+    setRecipientSignature('');
     setDeliveryNote('');
     setProofError('');
   };
@@ -321,7 +361,7 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
     setProofError('');
 
     if (!proofPhoto) {
-      setProofError('Prenez d’abord une photo du colis remis avant de confirmer la livraison.');
+      triggerPinErrorFeedback('Prenez d’abord une photo du colis remis avant de confirmer la livraison.');
       return;
     }
 
@@ -329,22 +369,24 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
     const res = completeDeliveryWithProof({
       orderId: deliveringOrder.id,
       photoDataUrl: proofPhoto,
+      geo: proofGeo,
       pinEntered: bypassPinMode ? undefined : pinCode,
       bypassPinReason: bypassPinMode ? bypassReason : undefined,
+      managerOverrideEntered: bypassPinMode ? managerOverrideCode : undefined,
+      recipientName: bypassPinMode ? recipientName : undefined,
+      recipientSignature: bypassPinMode ? recipientSignature : undefined,
       paymentCollected: remaining > 0 ? { amount: remaining, method: collectedMethod } : undefined,
       note: deliveryNote.trim() || undefined,
       driverName: currentDriver?.name || 'Livreur',
     });
 
     if (!res.ok) {
-      setProofError(res.error || 'Validation impossible.');
+      triggerPinErrorFeedback(res.error || 'Validation impossible.');
       return;
     }
 
-    setDeliveringOrder(null);
-    setProofPhoto('');
-    setPinCode('');
-    setDeliveryNote('');
+    soundNotifier.playSuccessHaptic();
+    closeDeliverSheet();
   };
 
   const openMapsUrl = (order: ErpOrder) => {
@@ -1269,11 +1311,11 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
                       Reprendre
                     </button>
                     <span
-                      style={{ backgroundColor: 'var(--ok-dot)' }}
+                      style={{ backgroundColor: proofGeo ? 'var(--ok-dot)' : 'var(--warn-dot)' }}
                       className="absolute top-2.5 right-2.5 px-2.5 py-1 rounded-full text-[11px] font-semibold text-white inline-flex items-center gap-1"
                     >
-                      <Check className="w-3 h-3" />
-                      Horodatée
+                      <LocateFixed className="w-3 h-3" />
+                      {proofGeo ? `GPS ±${proofGeo.accuracy} m` : 'Horodatée'}
                     </span>
                   </>
                 ) : (
@@ -1291,13 +1333,17 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
                 )}
               </div>
 
-              {/* Code de remise client (4 chiffres) */}
+              {/* Code de remise client (4 chiffres) OU Procédure anti-fraude Dérogation Caisse + Signature */}
               {deliveringOrder.deliveryCode && (
-                <div className="space-y-2">
+                <div className="space-y-2.5">
                   <div className="flex items-center justify-between gap-2">
                     <label className="text-[12.5px] font-semibold flex items-center gap-1.5">
-                      <KeyRound className="w-3.5 h-3.5" style={{ color: 'var(--accent)' }} />
-                      Code de remise client
+                      {bypassPinMode ? (
+                        <ShieldAlert className="w-3.5 h-3.5" style={{ color: 'var(--warn-dot)' }} />
+                      ) : (
+                        <KeyRound className="w-3.5 h-3.5" style={{ color: 'var(--accent)' }} />
+                      )}
+                      {bypassPinMode ? 'Dérogation sécurisée (Caisse)' : 'Code de remise client'}
                     </label>
                     <button
                       type="button"
@@ -1308,7 +1354,7 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
                       className="text-[11.5px] underline cursor-pointer"
                       style={{ color: 'var(--ink-muted)' }}
                     >
-                      {bypassPinMode ? 'Saisir le code' : 'Sans téléphone ?'}
+                      {bypassPinMode ? 'Revenir au code client' : 'Client sans téléphone ?'}
                     </button>
                   </div>
 
@@ -1319,30 +1365,94 @@ export const DriverMobileApp: React.FC<DriverMobileAppProps> = ({ onBackToDashbo
                       autoComplete="one-time-code"
                       maxLength={4}
                       value={pinCode}
-                      onChange={(e) => setPinCode(e.target.value.replace(/\D/g, '').slice(0, 4))}
+                      onChange={(e) => {
+                        setProofError('');
+                        setPinCode(e.target.value.replace(/\D/g, '').slice(0, 4));
+                      }}
                       placeholder="• • • •"
                       style={{
                         backgroundColor: 'var(--bg-subtle)',
-                        borderColor: 'var(--border-hairline)',
+                        borderColor: pinShake || proofError ? 'var(--err-dot)' : 'var(--border-hairline)',
                         color: 'var(--ink-primary)',
                       }}
-                      className="w-full h-12 px-4 rounded-xl border text-center font-mono text-[22px] tracking-[0.45em] font-semibold focus:outline-none focus:border-[var(--accent)]"
+                      className={`w-full h-12 px-4 rounded-xl border text-center font-mono text-[22px] tracking-[0.45em] font-semibold focus:outline-none focus:border-[var(--accent)] ${
+                        pinShake ? 'animate-dineo-shake' : ''
+                      }`}
                     />
                   ) : (
-                    <select
-                      value={bypassReason}
-                      onChange={(e) => setBypassReason(e.target.value)}
-                      style={{
-                        backgroundColor: 'var(--bg-subtle)',
-                        borderColor: 'var(--warn-border)',
-                        color: 'var(--ink-primary)',
-                      }}
-                      className="w-full h-11 px-3 rounded-xl border text-[12.5px]"
+                    <div
+                      className="p-3.5 rounded-xl border space-y-3"
+                      style={{ backgroundColor: 'var(--warn-bg)', borderColor: 'var(--warn-border)' }}
                     >
-                      <option value="Téléphone client déchargé / commande vocale">Téléphone client déchargé</option>
-                      <option value="Remis au gardien / réception sur instruction client">Remis au gardien / réception</option>
-                      <option value="Client sans smartphone">Client sans smartphone</option>
-                    </select>
+                      <div className="flex items-start justify-between gap-2.5">
+                        <p className="text-[11.5px] leading-snug" style={{ color: 'var(--warn-text)' }}>
+                          <strong>Anti-fraude :</strong> appelez la caisse pour obtenir le code de dérogation (fonctionne même sans internet par appel GSM) et faites signer le réceptionnaire.
+                        </p>
+                        <a
+                          href={`tel:${state.settings.phone}`}
+                          style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--warn-border)', color: 'var(--ink-primary)' }}
+                          className="shrink-0 h-8 px-2.5 rounded-lg border text-[11.5px] font-semibold inline-flex items-center gap-1"
+                        >
+                          <Phone className="w-3 h-3" style={{ color: 'var(--accent)' }} />
+                          Caisse
+                        </a>
+                      </div>
+
+                      <select
+                        value={bypassReason}
+                        onChange={(e) => setBypassReason(e.target.value)}
+                        style={{
+                          backgroundColor: 'var(--bg-surface)',
+                          borderColor: 'var(--border-hairline)',
+                          color: 'var(--ink-primary)',
+                        }}
+                        className="w-full h-10 px-3 rounded-xl border text-[12.5px]"
+                      >
+                        <option value="Téléphone client déchargé / batterie vide">Téléphone client déchargé / batterie vide</option>
+                        <option value="Remis au gardien / proche après appel caisse">Remis au gardien / proche (accord caisse)</option>
+                        <option value="Client sans smartphone (commande vocale)">Client sans smartphone (commande vocale)</option>
+                      </select>
+
+                      <input
+                        type="text"
+                        value={recipientName}
+                        onChange={(e) => setRecipientName(e.target.value)}
+                        placeholder="Nom complet du réceptionnaire *"
+                        style={{
+                          backgroundColor: 'var(--bg-surface)',
+                          borderColor: 'var(--border-hairline)',
+                          color: 'var(--ink-primary)',
+                        }}
+                        className="w-full h-10 px-3 rounded-xl border text-[13px] focus:outline-none focus:border-[var(--accent)]"
+                      />
+
+                      <SignaturePad value={recipientSignature} onChange={setRecipientSignature} />
+
+                      <div className="space-y-1">
+                        <label className="text-[11.5px] font-semibold block" style={{ color: 'var(--warn-text)' }}>
+                          Code dérogation dicté par la Caisse (4 chiffres) *
+                        </label>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          maxLength={4}
+                          value={managerOverrideCode}
+                          onChange={(e) => {
+                            setProofError('');
+                            setManagerOverrideCode(e.target.value.replace(/\D/g, '').slice(0, 4));
+                          }}
+                          placeholder="• • • •"
+                          style={{
+                            backgroundColor: 'var(--bg-surface)',
+                            borderColor: pinShake || proofError ? 'var(--err-dot)' : 'var(--warn-border)',
+                            color: 'var(--ink-primary)',
+                          }}
+                          className={`w-full h-11 px-4 rounded-xl border text-center font-mono text-[20px] tracking-[0.45em] font-semibold focus:outline-none focus:border-[var(--accent)] ${
+                            pinShake ? 'animate-dineo-shake' : ''
+                          }`}
+                        />
+                      </div>
+                    </div>
                   )}
                 </div>
               )}

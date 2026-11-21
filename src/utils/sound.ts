@@ -25,10 +25,73 @@ class SoundNotifier {
   }
 
   /**
-   * Déverrouille l'AudioContext suite à un geste utilisateur (clic/tap sur mobile).
+   * Indique si le navigateur/téléphone expose l'API Web Vibration (Android Chrome/Edge/Firefox ;
+   * non supporté par Apple sur iOS Safari).
+   */
+  public supportsHardwareVibration(): boolean {
+    return typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function';
+  }
+
+  /**
+   * Déclenche une vibration matérielle Android de façon sûre (sans jamais lever d'exception).
+   */
+  public vibrate(pattern: number | number[]) {
+    try {
+      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+        navigator.vibrate(pattern);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Déverrouille l'AudioContext et réveille le moteur haptique suite à un geste utilisateur.
    */
   public unlockAudio() {
     this.getContext();
+  }
+
+  /**
+   * Retour tactile + sonore immédiat d'erreur (ex: mauvais code de remise ou code dérogation erroné).
+   * Appelé directement dans le gestionnaire de clic/soumission pour garantir la vibration sur mobile.
+   */
+  public playErrorFeedback() {
+    // Triple vibration sèche d'erreur immédiatement dans le geste utilisateur (Android)
+    this.vibrate([110, 55, 110, 55, 170]);
+
+    if (!this.soundEnabled) return;
+    try {
+      const ctx = this.getContext();
+      if (!ctx) return;
+      const now = ctx.currentTime;
+      const notes = [
+        { freq: 230, start: 0, dur: 0.14 },
+        { freq: 168, start: 0.15, dur: 0.22 },
+      ];
+      for (const n of notes) {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(n.freq, now + n.start);
+        gain.gain.setValueAtTime(0.001, now + n.start);
+        gain.gain.linearRampToValueAtTime(0.24, now + n.start + 0.015);
+        gain.gain.exponentialRampToValueAtTime(0.001, now + n.start + n.dur);
+        osc.connect(gain);
+        gain.connect(ctx.destination);
+        osc.start(now + n.start);
+        osc.stop(now + n.start + n.dur + 0.02);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Courte impulsion haptique de succès (validation d'une livraison).
+   */
+  public playSuccessHaptic() {
+    this.vibrate([45, 45, 95]);
   }
 
   private getContext(): AudioContext | null {
@@ -176,31 +239,30 @@ class SoundNotifier {
   }
 
   /**
-   * Alerte sonore prolongée côté Livreur : 10 secondes complètes (10 salves rythmées + vibration Android)
+   * Alerte sonore prolongée côté Livreur : 10 secondes complètes (10 salves rythmées + vibration Android à chaque salve)
    * déclenchée dès que la cuisine valide qu'une commande assignée est PRÊTE.
    */
   public playDriverReadyAlarm(durationSeconds = 10, onEnd?: () => void) {
-    if (!this.soundEnabled) return;
+    if (!this.soundEnabled) {
+      // Même si le son est coupé, on conserve la vibration tactile si disponible
+      this.vibrate([260, 140, 260, 140, 260]);
+      return;
+    }
     this.stopDriverReadyAlarm();
     this.isDriverAlarmPlaying = true;
 
     const pulses = Math.max(1, Math.round(durationSeconds));
-
-    // Motif de vibration prolongé sur smartphone Android
-    try {
-      if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-        navigator.vibrate([
-          350, 200, 350, 200, 400, 200, 400, 200, 400, 200, 400, 200, 450, 200, 450,
-        ]);
-      }
-    } catch {
-      // ignore
-    }
-
     const intervalMs = 1000;
-    for (let i = 0; i < pulses; i++) {
+
+    // Salve immédiate (synchrone dans le geste si déclenchée par clic "Test 10s", fiable sur Android)
+    this.vibrate([280, 130, 280]);
+    this.playDriverReadyBurst();
+
+    for (let i = 1; i < pulses; i++) {
       const id = window.setTimeout(() => {
         if (this.isDriverAlarmPlaying) {
+          // Impulsions courtes par salve : beaucoup mieux exécutées par les téléphones Android (Tecno, Infinix, Samsung, Xiaomi)
+          this.vibrate([280, 130, 280]);
           this.playDriverReadyBurst();
         }
       }, i * intervalMs);

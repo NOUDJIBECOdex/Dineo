@@ -1,7 +1,9 @@
 import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { AppErrorBoundary } from './components/common/AppErrorBoundary';
+import { OfflineStatusWidget } from './components/common/OfflineStatusWidget';
 import { CartProvider } from './store/cart.context';
 import { ErpProvider } from './store/erp.context';
+import { OfflineProvider } from './store/offline.context';
 import { OrderProvider } from './store/order.context';
 
 // Code-splitting par espace métier : sur smartphone 3G à Maroua,
@@ -107,13 +109,16 @@ export function AppContent() {
 export default function App() {
   return (
     <AppErrorBoundary>
-      <ErpProvider>
-        <OrderProvider>
-          <CartProvider>
-            <AppContent />
-          </CartProvider>
-        </OrderProvider>
-      </ErpProvider>
+      <OfflineProvider>
+        <ErpProvider>
+          <OrderProvider>
+            <CartProvider>
+              <OfflineStatusWidget />
+              <AppContent />
+            </CartProvider>
+          </OrderProvider>
+        </ErpProvider>
+      </OfflineProvider>
     </AppErrorBoundary>
   );
 }

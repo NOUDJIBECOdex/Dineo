@@ -163,11 +163,26 @@ export interface ErpOrderItem {
   notes?: string;
 }
 
+export interface GeoSnapshot {
+  lat: number;
+  lng: number;
+  accuracy: number; // précision en mètres
+  capturedAt: string;
+}
+
 export interface DeliveryProof {
   photoDataUrl: string;
   capturedAt: string;
   capturedBy: string;
   verifiedByPin: boolean;
+  /** Mode de vérification : PIN client standard ou Dérogation autorisée par la caisse + signature */
+  verificationMode?: 'CLIENT_PIN' | 'MANAGER_OVERRIDE';
+  /** Coordonnées GPS capturées au moment de la photo */
+  geo?: GeoSnapshot;
+  /** Nom + signature manuscrite obligatoires en cas de dérogation sans téléphone client */
+  recipientName?: string;
+  recipientSignature?: string;
+  overrideReason?: string;
   note?: string;
 }
 
@@ -206,7 +221,9 @@ export interface ErpOrder {
   deliveryStatus?: DeliveryStatus;
   /** Code PIN secret à 4 chiffres communiqué uniquement au client pour sécuriser la remise */
   deliveryCode?: string;
-  /** Preuve photo horodatée prise par le livreur à la remise */
+  /** Code de dérogation Caisse/Gérant (4 chiffres) visible UNIQUEMENT au restaurant — impossible à deviner par le livreur */
+  managerOverrideCode?: string;
+  /** Preuve photo horodatée + géolocalisée prise par le livreur à la remise */
   deliveryProof?: DeliveryProof;
   /** Confirmation (et photo/avis optionnels) envoyée par le client */
   clientConfirmation?: ClientDeliveryConfirmation;

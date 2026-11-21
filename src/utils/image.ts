@@ -52,12 +52,14 @@ export function compressImageToDataUrl(
 
 /**
  * Compresse une photo de preuve de livraison et incruste automatiquement
- * un bandeau d'horodatage anti-fraude (N° commande, date/heure, lieu, acteur).
+ * un bandeau d'horodatage + géolocalisation GPS anti-fraude directement dans les pixels.
  */
 export function compressAndWatermarkProofPhoto(
   file: File,
   stampLine1: string,
-  stampLine2: string
+  stampLine2: string,
+  stampGeoLine?: string,
+  geoCaptured = false
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -89,20 +91,30 @@ export function compressAndWatermarkProofPhoto(
 
         ctx.drawImage(img, 0, 0, width, height);
 
-        // Bandeau filigrane horodaté en bas de l'image
-        const barH = Math.max(44, Math.round(height * 0.13));
-        ctx.fillStyle = 'rgba(18, 18, 20, 0.78)';
+        // Bandeau filigrane horodaté + GPS en bas de l'image
+        const hasGeoLine = Boolean(stampGeoLine);
+        const barH = hasGeoLine
+          ? Math.max(60, Math.round(height * 0.175))
+          : Math.max(44, Math.round(height * 0.13));
+        ctx.fillStyle = 'rgba(16, 16, 18, 0.82)';
         ctx.fillRect(0, height - barH, width, barH);
 
-        const fontSize1 = Math.max(12, Math.round(width * 0.025));
-        const fontSize2 = Math.max(10, Math.round(width * 0.021));
+        const fontSize1 = Math.max(12, Math.round(width * 0.024));
+        const fontSize2 = Math.max(10, Math.round(width * 0.02));
+
         ctx.fillStyle = '#FFFFFF';
         ctx.font = `600 ${fontSize1}px Inter, system-ui, sans-serif`;
-        ctx.fillText(stampLine1, 12, height - barH + Math.round(barH * 0.44));
+        ctx.fillText(stampLine1, 12, height - barH + Math.round(barH * (hasGeoLine ? 0.31 : 0.44)));
 
         ctx.fillStyle = '#D4D4D8';
         ctx.font = `400 ${fontSize2}px monospace`;
-        ctx.fillText(stampLine2, 12, height - barH + Math.round(barH * 0.80));
+        ctx.fillText(stampLine2, 12, height - barH + Math.round(barH * (hasGeoLine ? 0.6 : 0.8)));
+
+        if (stampGeoLine) {
+          ctx.fillStyle = geoCaptured ? '#4ADE80' : '#FBBF24';
+          ctx.font = `600 ${fontSize2}px monospace`;
+          ctx.fillText(stampGeoLine, 12, height - barH + Math.round(barH * 0.87));
+        }
 
         resolve(canvas.toDataURL('image/jpeg', 0.76));
       };

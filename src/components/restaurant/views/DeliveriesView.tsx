@@ -3,11 +3,17 @@ import {
   Camera,
   Check,
   ChefHat,
+  ExternalLink,
+  Eye,
+  EyeOff,
   KeyRound,
+  LocateFixed,
   Lock,
   MapPin,
+  PenLine,
   Phone,
   Plus,
+  ShieldAlert,
   ShieldCheck,
   Truck,
   UserCheck,
@@ -17,6 +23,7 @@ import React, { useMemo, useState } from 'react';
 import { useErp } from '../../../store/erp.context';
 import type { DeliveryStatus, ErpOrder } from '../../../types/erp';
 import { formatFCFA } from '../../../utils/currency';
+import { buildGoogleMapsPinUrl } from '../../../utils/geo';
 import {
   Btn,
   DialogModal,
@@ -54,6 +61,7 @@ export const DeliveriesView: React.FC = () => {
   const [tab, setTab] = useState<'ORDERS' | 'DRIVERS'>('ORDERS');
   const [driverModalOpen, setDriverModalOpen] = useState(false);
   const [proofViewOrder, setProofViewOrder] = useState<ErpOrder | null>(null);
+  const [revealedOverrides, setRevealedOverrides] = useState<Record<string, boolean>>({});
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('+237 6 ');
   const [vehicleInfo, setVehicleInfo] = useState('Moto Sanili 125 · EN-');
@@ -176,15 +184,59 @@ export const DeliveriesView: React.FC = () => {
                       <div className="pt-2 mt-1.5 border-t flex flex-wrap items-center justify-between gap-2 text-[11.5px]" style={{ borderColor: 'var(--border-hairline)' }}>
                         <div className="flex flex-wrap items-center gap-2">
                           {ord.deliveryCode && (
-                            <span className="inline-flex items-center gap-1 font-mono font-semibold px-2 py-0.5 rounded bg-white/80 text-[#18181B] border border-[#E7E4DD]">
+                            <span
+                              className="inline-flex items-center gap-1 font-mono font-semibold px-2 py-0.5 rounded border"
+                              style={{
+                                backgroundColor: 'var(--bg-surface)',
+                                borderColor: 'var(--border-hairline)',
+                                color: 'var(--ink-primary)',
+                              }}
+                            >
                               <KeyRound className="w-3 h-3" style={{ color: 'var(--accent)' }} />
-                              PIN : {ord.deliveryCode}
+                              PIN Client : {ord.deliveryCode}
                             </span>
+                          )}
+                          {ord.managerOverrideCode && ord.deliveryStatus !== 'LIVREE' && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setRevealedOverrides((prev) => ({ ...prev, [ord.id]: !prev[ord.id] }))
+                              }
+                              title="Code de secours à dicter au livreur UNIQUEMENT s'il appelle la caisse pour un client sans téléphone"
+                              className="inline-flex items-center gap-1 font-mono font-semibold px-2 py-0.5 rounded border cursor-pointer"
+                              style={{
+                                backgroundColor: 'var(--warn-bg)',
+                                borderColor: 'var(--warn-border)',
+                                color: 'var(--warn-text)',
+                              }}
+                            >
+                              <ShieldAlert className="w-3 h-3" />
+                              <span>
+                                Dérogation Caisse :{' '}
+                                {revealedOverrides[ord.id] ? ord.managerOverrideCode : '••••'}
+                              </span>
+                              {revealedOverrides[ord.id] ? (
+                                <EyeOff className="w-3 h-3" />
+                              ) : (
+                                <Eye className="w-3 h-3" />
+                              )}
+                            </button>
                           )}
                           {ord.deliveryProof && (
                             <StatusPill tone={ord.deliveryProof.verifiedByPin ? 'ok' : 'warn'}>
-                              {ord.deliveryProof.verifiedByPin ? 'Photo + PIN OK' : 'Photo (Sans PIN)'}
+                              {ord.deliveryProof.verifiedByPin
+                                ? 'Photo GPS + PIN OK'
+                                : 'Dérogation Caisse + Signature'}
                             </StatusPill>
+                          )}
+                          {ord.deliveryProof?.geo && (
+                            <span
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] font-mono"
+                              style={{ backgroundColor: 'var(--ok-bg)', color: 'var(--ok-text)' }}
+                            >
+                              <LocateFixed className="w-3 h-3" />
+                              GPS ±{ord.deliveryProof.geo.accuracy}m
+                            </span>
                           )}
                           {ord.clientConfirmation && (
                             <StatusPill tone={ord.clientConfirmation.status === 'RECEIVED_OK' ? 'ok' : 'err'}>
@@ -395,7 +447,7 @@ export const DeliveriesView: React.FC = () => {
                 </span>
                 {proofViewOrder.deliveryProof && (
                   <StatusPill tone={proofViewOrder.deliveryProof.verifiedByPin ? 'ok' : 'warn'}>
-                    {proofViewOrder.deliveryProof.verifiedByPin ? 'PIN vérifié' : 'Sans PIN'}
+                    {proofViewOrder.deliveryProof.verifiedByPin ? 'PIN Client vérifié' : 'Dérogation Caisse'}
                   </StatusPill>
                 )}
               </div>
@@ -412,9 +464,60 @@ export const DeliveriesView: React.FC = () => {
                 </div>
               )}
               {proofViewOrder.deliveryProof && (
-                <div className="text-[11.5px] space-y-0.5" style={{ color: 'var(--ink-muted)' }}>
-                  <div>Par : <strong>{proofViewOrder.deliveryProof.capturedBy}</strong></div>
-                  <div>Le : {formatShortDateTime(proofViewOrder.deliveryProof.capturedAt)}</div>
+                <div className="text-[11.5px] space-y-1.5" style={{ color: 'var(--ink-muted)' }}>
+                  <div>Par : <strong>{proofViewOrder.deliveryProof.capturedBy}</strong> · {formatShortDateTime(proofViewOrder.deliveryProof.capturedAt)}</div>
+
+                  {/* Vérification GPS + lien Google Maps */}
+                  {proofViewOrder.deliveryProof.geo ? (
+                    <div
+                      className="p-2.5 rounded-lg border flex items-center justify-between gap-2"
+                      style={{ backgroundColor: 'var(--ok-bg)', borderColor: 'var(--ok-border)', color: 'var(--ok-text)' }}
+                    >
+                      <span className="font-mono text-[11px] flex items-center gap-1.5">
+                        <LocateFixed className="w-3.5 h-3.5 shrink-0" />
+                        {proofViewOrder.deliveryProof.geo.lat.toFixed(5)}, {proofViewOrder.deliveryProof.geo.lng.toFixed(5)} (±{proofViewOrder.deliveryProof.geo.accuracy} m)
+                      </span>
+                      <a
+                        href={buildGoogleMapsPinUrl(proofViewOrder.deliveryProof.geo)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1 font-semibold underline shrink-0 text-[11px]"
+                      >
+                        Carte
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    </div>
+                  ) : (
+                    <div
+                      className="p-2 rounded-lg border text-[11px] font-medium"
+                      style={{ backgroundColor: 'var(--warn-bg)', borderColor: 'var(--warn-border)', color: 'var(--warn-text)' }}
+                    >
+                      GPS non capté lors de la prise de photo (à vérifier avec le livreur).
+                    </div>
+                  )}
+
+                  {/* Signature manuscrite du réceptionnaire en cas de dérogation */}
+                  {proofViewOrder.deliveryProof.recipientSignature && (
+                    <div
+                      className="p-2.5 rounded-lg border space-y-1.5"
+                      style={{ backgroundColor: 'var(--bg-surface)', borderColor: 'var(--border-hairline)' }}
+                    >
+                      <div className="text-[11px] font-semibold flex items-center gap-1" style={{ color: 'var(--ink-primary)' }}>
+                        <PenLine className="w-3 h-3" style={{ color: 'var(--accent)' }} />
+                        Signé par : {proofViewOrder.deliveryProof.recipientName || 'Réceptionnaire'}
+                      </div>
+                      {proofViewOrder.deliveryProof.overrideReason && (
+                        <div className="text-[11px]">Motif : {proofViewOrder.deliveryProof.overrideReason}</div>
+                      )}
+                      <img
+                        src={proofViewOrder.deliveryProof.recipientSignature}
+                        alt="Signature réceptionnaire"
+                        className="w-full h-24 object-contain rounded border bg-white"
+                        style={{ borderColor: 'var(--border-hairline)' }}
+                      />
+                    </div>
+                  )}
+
                   {proofViewOrder.deliveryProof.note && <div>Note : {proofViewOrder.deliveryProof.note}</div>}
                 </div>
               )}
